@@ -4,9 +4,9 @@ module tests
 // in characters, with every distinct thing that could have continued the text there, in the order
 // the grammar tried them, and what was found. `label` names a rule in place of what it is made of,
 // a commit point stops backtracking, and `filter`, `failure` and the strings say what they wanted.
-import dev.avinlang.parsing.{Parser, commit, defer, failure, ident, integer, lit, rep, repSep, stringLiteral, symbol, token, whitespace}
+import dev.avinlang.parsing.{Parser, commit, failure, ident, integer, lit, rep, repSep, stringLiteral, symbol, token, whitespace}
 
-lazy val element: Parser[long] = token(integer) | defer(list) ^^ (xs -> long(xs.length()))
+lazy val element: Parser[long] = token(integer) | list ^^ (xs -> long(xs.length()))
 
 lazy val list: Parser[Vector[long]] = symbol("[") ~> repSep(element, symbol(",")) <~ symbol("]")
 

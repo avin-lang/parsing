@@ -19,7 +19,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.2.0" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.3.0" }
 }
 ```
 
@@ -31,7 +31,7 @@ Arithmetic expressions, evaluated as they are parsed: `+` and `-` below `*` and 
 right-grouping `^`, with unary minus and parentheses.
 
 ```avin
-import dev.avinlang.parsing.{Parser, chainLeft, chainRight, defer, integer, symbol, token, whitespace}
+import dev.avinlang.parsing.{Parser, chainLeft, chainRight, integer, symbol, token, whitespace}
 
 power(base: long, exponent: long) -> long
     var result: long = 1
@@ -44,10 +44,9 @@ op(text: string, f: (long, long) -> long) -> Parser[(long, long) -> long] = symb
 
 lazy val number: Parser[long] = token(integer)
 
-// The grammar refers to `expr` and `atom` before they are complete, so it reads them through `defer`.
 lazy val atom: Parser[long] = number
-    | symbol("(") ~> defer(expr) <~ symbol(")")
-    | symbol("-") ~> defer(atom) ^^ (n -> -n)
+    | symbol("(") ~> expr <~ symbol(")")
+    | symbol("-") ~> atom ^^ (n -> -n)
 
 lazy val factor: Parser[long] = chainRight(atom, op("^", power))
 
@@ -97,7 +96,7 @@ main()
 | `positioned(p)`, `p.positioned()` | `p` | `(a, Position)` of where it began |
 | `guard(p)` | `p`, reading nothing | `p`'s |
 | `notFollowedBy(p)` | nothing, where `p` fails | `()` |
-| `defer(p)` | the parser `p` names, found when it first runs | `p`'s |
+| `p` | the parser `p` names, found when it first runs | `p`'s |
 | `success(v)`, `failure(what)` | nothing; `failure` fails expecting `what` | `v` |
 
 Every name with a `~` in it binds tightest, then `^^` and `^^^`, then `|`, so a rule reads as
@@ -146,11 +145,14 @@ rule it is in, so the error names what that rule expected.
 
 ## Recursive grammars
 
-Module-level rules are `lazy val`s, and a rule that refers to one not yet complete reads it through
-`defer`, whose parameter is evaluated the first time the deferred parser runs. Every cycle of rules
-needs a `defer` somewhere on it. Each level of nesting is a few calls deep, so the depth a text can
-nest is bounded by the stack of the thread parsing it: a few thousand levels of parentheses on the
-main thread, more on a thread spawned with a larger stack.
+Module-level rules are `lazy val`s, and they may refer to each other and to themselves in any
+order: every combinator takes the parsers it is given by name, and reads one the first time the
+parser it made runs, when every rule is complete. The receiver of a method is the exception, made
+when the method is called, so a rule may not begin with itself, which would loop in any case.
+
+Each level of nesting is a few calls deep, so the depth a text can nest is bounded by the stack of
+the thread parsing it: a few thousand levels of parentheses on the main thread, more on a thread
+spawned with a larger stack.
 
 ## Tests
 

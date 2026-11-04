@@ -1,0 +1,73 @@
+module tests
+
+// Every combinator takes the parsers it is given by name: an operand is made the first time the
+// parser that combinator made runs, not when the combinator is called, and it is made once.
+import dev.avinlang.parsing.{Parser, chainLeft, chainRight, commit, guard, lit, notFollowedBy, opt, positioned, rep, rep1, rep1Sep, repSep, token}
+
+// The names of the operands made so far.
+val made = Buffer[string]()
+
+// `p`, noting under `name` that the expression giving it was evaluated.
+noted[T](name: string, p: Parser[T]) -> Parser[T]
+    made.add(name)
+    p
+
+madeCount(name: string) -> int
+    var n = 0
+    for m in made
+        if m == name then n += 1
+    n
+
+// `p` has not made the operand `name` yet, makes it on its first run, and keeps it for the next.
+madeOnce[T](name: string, p: Parser[T], text: string)
+    assert(madeCount(name) == 0, s"$name was made when its combinator was called")
+    assert(p.parse(text) is Ok(_), s"$name: the first parse of `$text` failed")
+    assert(p.parse(text) is Ok(_), s"$name: the second parse of `$text` failed")
+    assert(madeCount(name) == 1, s"$name was made ${madeCount(name)} times")
+
+ab(name: string) -> Parser[string] = noted(name, lit("b"))
+
+@test("the operand of a sequence is made when the sequence first runs, and kept")
+sequencesByName()
+    madeOnce("~", lit("a") ~ ab("~"), "ab")
+    madeOnce("~>", lit("a") ~> ab("~>"), "ab")
+    madeOnce("<~", lit("a") <~ ab("<~"), "ab")
+    madeOnce("~!", lit("a") ~! ab("~!"), "ab")
+    madeOnce("|", lit("a") | ab("|"), "b")
+
+@test("the parsers a repetition is given are made when it first runs, and kept")
+repetitionsByName()
+    madeOnce("rep", rep(ab("rep")), "bb")
+    madeOnce("rep1", rep1(ab("rep1")), "bb")
+    madeOnce("repSep", repSep(ab("repSep"), noted("repSep sep", lit(","))), "b,b")
+    assertEq(madeCount("repSep sep"), 1)
+    madeOnce("rep1Sep", rep1Sep(ab("rep1Sep"), noted("rep1Sep sep", lit(","))), "b,b")
+    assertEq(madeCount("rep1Sep sep"), 1)
+    madeOnce("chainLeft", chainLeft(noted("chainLeft", lit("1") ^^^ 1), noted("chainLeft op", lit("+") ^^^ ((a: int, b: int) -> a + b))), "1+1")
+    assertEq(madeCount("chainLeft op"), 1)
+    madeOnce("chainRight", chainRight(noted("chainRight", lit("1") ^^^ 1), noted("chainRight op", lit("+") ^^^ ((a: int, b: int) -> a + b))), "1+1")
+    assertEq(madeCount("chainRight op"), 1)
+
+@test("the parser given to opt, commit, positioned, a look ahead or token is made when it first runs")
+wrappersByName()
+    madeOnce("opt", opt(ab("opt")), "b")
+    madeOnce("commit", commit(ab("commit")), "b")
+    madeOnce("positioned", positioned(ab("positioned")), "b")
+    madeOnce("guard", guard(ab("guard")) ~> lit("b"), "b")
+    madeOnce("notFollowedBy", lit("a") <~ notFollowedBy(ab("notFollowedBy")), "a")
+    madeOnce("token", token(ab("token")), "b  ")
+
+// Rules that refer to each other and to themselves through every kind of combinator, with no rule
+// complete when another first mentions it.
+lazy val brackets: Parser[int] = lit("(") ~> rep(brackets) <~ lit(")") ^^ (xs -> xs.length())
+lazy val chained: Parser[int] = lit("a") ~> opt(chained) ^^ (o -> o match
+    Some(n) -> n + 1
+    None -> 1)
+lazy val sums: Parser[int] = chainLeft(summand, lit("+") ^^^ ((a: int, b: int) -> a + b))
+lazy val summand: Parser[int] = lit("1") ^^^ 1 | lit("[") ~> sums <~ lit("]")
+
+@test("rules refer to each other in any order, through any combinator")
+recursiveRules()
+    assertEq(shown(brackets.parse("(()()())")), "3")
+    assertEq(shown(chained.parse("aaaa")), "4")
+    assertEq(shown(sums.parse("1+[1+1]+[[1]]")), "4")

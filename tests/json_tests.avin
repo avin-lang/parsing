@@ -4,7 +4,7 @@ module tests
 // numbers, `true`, `false` and `null`, nested and empty, with white space anywhere a token may be
 // followed by it. Printing a parsed document and parsing the print gives the same value, and a
 // document of more than a megabyte parses well inside the time a test is given.
-import dev.avinlang.parsing.{Parser, decimal, defer, repSep, stringLiteral, symbol, token, whitespace}
+import dev.avinlang.parsing.{Parser, decimal, repSep, stringLiteral, symbol, token, whitespace}
 
 data Json
     JNull
@@ -19,8 +19,8 @@ lazy val value: Parser[Json] = symbol("null") ^^^ JNull
     | symbol("false") ^^^ JBool(false)
     | token(decimal) ^^ (x -> JNumber(x))
     | token(stringLiteral) ^^ (s -> JString(s))
-    | defer(array)
-    | defer(obj)
+    | array
+    | obj
 
 lazy val array: Parser[Json] = symbol("[") ~> repSep(value, symbol(",")) <~ symbol("]") ^^ (items -> JArray(items))
 

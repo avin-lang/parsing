@@ -162,10 +162,12 @@ mention it is the very start of the text, `whitespace ~> expr`. `token(p)` is `p
 white space after it, and `symbol` is the common case of a literal token.
 
     // `p`, then the white space after it.
-    token[T](p: Parser[T]) -> Parser[T] = Parser(input ->
-        val r = p.run(input)
-        if r is Some(_) then skip(input, isSpace)
-        r)
+    token[T](p: -> Parser[T]) -> Parser[T]
+        val q = later(p)
+        Parser(input ->
+            val r = q.run(input)
+            if r is Some(_) then skip(input, isSpace)
+            r)
 
     // Exactly `text`, then the white space after it.
     symbol(text: string) -> Parser[string] = token(lit(text))
