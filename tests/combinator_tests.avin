@@ -7,7 +7,7 @@ import dev.avinlang.parsing.{Parser, chainLeft, chainRight, digits, eof, guard, 
 
 lazy val number: Parser[long] = token(integer)
 
-lazy val numbers: Parser[Vector[long]] = number.repSep(symbol(","))
+lazy val numbers: Parser[Vector[long]] = repSep(number, symbol(","))
 
 // `if` as a keyword, not the start of a longer name.
 lazy val ifKeyword: Parser[string] = lit("if") <~ notFollowedBy(satisfy("letter", isLetter))
@@ -21,8 +21,8 @@ repetitions()
     assertEq(shown(rep(lit("a")).parse("aaa")), "[a, a, a]")
     assertEq(shown(rep1(lit("a")).parse("")), "error 1:1: expected `a`, found end of input")
     assertEq(shown(rep1(lit("a")).parse("aa")), "[a, a]")
-    assertEq(shown(lit("ab").rep().parse("abab")), "[ab, ab]")
-    assertEq(shown(lit("ab").rep1().parse("ab")), "[ab]")
+    assertEq(shown(rep(lit("ab")).parse("abab")), "[ab, ab]")
+    assertEq(shown(rep1(lit("ab")).parse("ab")), "[ab]")
 
 @test("a repeated parser that reads nothing ends the repetition rather than looping")
 repetitionOfNothing()
@@ -37,7 +37,7 @@ separated()
     assertEq(shown(numbers.parse("1, 2,")), "error 1:6: expected integer, found end of input")
     assertEq(shown(repSep(number, symbol(";")).parse("4; 5")), "[4, 5]")
     assertEq(shown(rep1Sep(number, symbol(",")).parse("")), "error 1:1: expected integer, found end of input")
-    assertEq(shown(number.rep1Sep(symbol(",")).parse("8,9")), "[8, 9]")
+    assertEq(shown(rep1Sep(number, symbol(",")).parse("8,9")), "[8, 9]")
 
 @test("an optional part is Some when present and None when absent")
 optional()
@@ -65,7 +65,7 @@ lookAhead()
 
 @test("a positioned value carries its line and its column in characters")
 positions()
-    val located = positioned(token(ident)).rep() ^^ (xs -> xs.map(match (name, at) -> s"$name@$at").mkString(" "))
+    val located = rep(positioned(token(ident))) ^^ (xs -> xs.map(match (name, at) -> s"$name@$at").mkString(" "))
     assertEq(shown(located.parse("alpha\n  béta g\n\ndelta")), "alpha@1:1 béta@2:3 g@2:8 delta@4:1")
     assertEq(shown((lit("x") ~> lit("y").positioned() ^^ (match (v, at) -> s"$v ${at.offset}")).parse("xy")), "y 1")
 

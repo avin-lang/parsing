@@ -162,7 +162,7 @@ got no further than its first character, and a commit makes a failure final.
             if r is None then input.committed = true
             r)
 
-## Repetition
+## Optional parts
 
 `opt` always succeeds: with `Some` of the value when the parser does, and with `None`, having read
 nothing, when it does not.
@@ -176,46 +176,6 @@ nothing, when it does not.
                     if input.committed then return None
                     input.offset = start
                     Some(None))
-
-`rep` runs a parser as many times as it succeeds. One case needs care: a parser that can succeed
-without reading anything, such as `takeWhile(isDigit)`, would succeed for ever at the same place.
-So a run that reads nothing ends the repetition, and its value is not added. The loop itself is
-`repeated`, below, shared by `rep` and `rep1`.
-
-        // The values of this parser run as many times as it succeeds, none included. A run that reads
-        // nothing ends the repetition without adding its value, so a parser that can succeed on nothing
-        // does not loop.
-        rep() -> Parser[Vector[T]] = Parser(input -> repeated(self, input, Buffer[T]()))
-
-        // As `rep`, at least once.
-        rep1() -> Parser[Vector[T]] = Parser(input ->
-            run(input) match
-                Some(a) ->
-                    val items = Buffer[T]()
-                    items.add(a)
-                    repeated(self, input, items)
-                None -> None)
-
-`repSep` reads values with separators between them. A separator promises another value, so
-`[1, 2,]` fails at the `]` rather than quietly accepting the trailing comma. The loop is
-`separated`, below.
-
-        // The values of this parser separated by `sep`, none included. A separator must be followed by a
-        // value, and a separator and value that together read nothing end the repetition.
-        repSep[S](sep: Parser[S]) -> Parser[Vector[T]] = Parser(input ->
-            val start = input.offset
-            run(input) match
-                Some(a) -> separated(self, sep, input, a)
-                None ->
-                    if input.committed then return None
-                    input.offset = start
-                    Some(Vector.empty[T]()))
-
-        // As `repSep`, at least one value.
-        rep1Sep[S](sep: Parser[S]) -> Parser[Vector[T]] = Parser(input ->
-            run(input) match
-                Some(a) -> separated(self, sep, input, a)
-                None -> None)
 
 ## Positions
 
@@ -257,7 +217,50 @@ some other language: a number at the start of a line, a header before a body.
                 Some(a) -> Ok((a, input.offset))
                 None -> Err(input.error())
 
-## The repetition loops
+## Repetition
+
+A repetition is not something a parser does but something made of one, so it takes the parser it
+repeats: `rep(statement)`, `repSep(value, symbol(","))`.
+
+`rep` runs a parser as many times as it succeeds. One case needs care: a parser that can succeed
+without reading anything, such as `takeWhile(isDigit)`, would succeed for ever at the same place.
+So a run that reads nothing ends the repetition, and its value is not added. The loop itself is
+`repeated`, below, shared by `rep` and `rep1`.
+
+    // The values of `p` run as many times as it succeeds, none included. A run that reads nothing
+    // ends the repetition without adding its value, so a parser that can succeed on nothing does not
+    // loop.
+    rep[T](p: Parser[T]) -> Parser[Vector[T]] = Parser(input -> repeated(p, input, Buffer[T]()))
+
+    // As `rep`, at least once.
+    rep1[T](p: Parser[T]) -> Parser[Vector[T]] = Parser(input ->
+        p.run(input) match
+            Some(a) ->
+                val items = Buffer[T]()
+                items.add(a)
+                repeated(p, input, items)
+            None -> None)
+
+`repSep` reads values with separators between them. A separator promises another value, so
+`[1, 2,]` fails at the `]` rather than quietly accepting the trailing comma. The loop is
+`separated`, below.
+
+    // The values of `p` separated by `sep`, none included. A separator must be followed by a value,
+    // and a separator and value that together read nothing end the repetition.
+    repSep[T, S](p: Parser[T], sep: Parser[S]) -> Parser[Vector[T]] = Parser(input ->
+        val start = input.offset
+        p.run(input) match
+            Some(a) -> separated(p, sep, input, a)
+            None ->
+                if input.committed then return None
+                input.offset = start
+                Some(Vector.empty[T]()))
+
+    // As `repSep`, at least one value.
+    rep1Sep[T, S](p: Parser[T], sep: Parser[S]) -> Parser[Vector[T]] = Parser(input ->
+        p.run(input) match
+            Some(a) -> separated(p, sep, input, a)
+            None -> None)
 
 Both loops have the same shape: remember where the next run starts, run, and on failure go back
 there and stop. They stop also when a run read nothing. A committed failure is not a stop but a
@@ -298,23 +301,11 @@ a trailing separator an error. `?` returns the `None` at once.
 
 ## The same, as functions
 
-Each of these combinators is also a function of the parser, for grammars that read better with the
-repetition in front: `rep(statement)` beside `statement.rep()`.
-
-    // `p.rep()`.
-    rep[T](p: Parser[T]) -> Parser[Vector[T]] = p.rep()
-
-    // `p.rep1()`.
-    rep1[T](p: Parser[T]) -> Parser[Vector[T]] = p.rep1()
+`opt`, `commit` and `positioned` are also functions of the parser, for grammars that read better
+with them in front: `opt(sign)` beside `sign.opt()`.
 
     // `p.opt()`.
     opt[T](p: Parser[T]) -> Parser[Option[T]] = p.opt()
-
-    // `p.repSep(sep)`.
-    repSep[T, S](p: Parser[T], sep: Parser[S]) -> Parser[Vector[T]] = p.repSep(sep)
-
-    // `p.rep1Sep(sep)`.
-    rep1Sep[T, S](p: Parser[T], sep: Parser[S]) -> Parser[Vector[T]] = p.rep1Sep(sep)
 
     // `p.commit()`.
     commit[T](p: Parser[T]) -> Parser[T] = p.commit()

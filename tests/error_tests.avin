@@ -4,13 +4,13 @@ module tests
 // in characters, with every distinct thing that could have continued the text there, in the order
 // the grammar tried them, and what was found. `label` names a rule in place of what it is made of,
 // a commit point stops backtracking, and `filter`, `failure` and the strings say what they wanted.
-import dev.avinlang.parsing.{Parser, commit, defer, failure, ident, integer, lit, stringLiteral, symbol, token, whitespace}
+import dev.avinlang.parsing.{Parser, commit, defer, failure, ident, integer, lit, rep, repSep, stringLiteral, symbol, token, whitespace}
 
 lazy val element: Parser[long] = token(integer) | defer(list) ^^ (xs -> long(xs.length()))
 
-lazy val list: Parser[Vector[long]] = symbol("[") ~> element.repSep(symbol(",")) <~ symbol("]")
+lazy val list: Parser[Vector[long]] = symbol("[") ~> repSep(element, symbol(",")) <~ symbol("]")
 
-lazy val labelled: Parser[Vector[long]] = symbol("[") ~> token(integer).label("number").repSep(symbol(",")) <~ symbol("]")
+lazy val labelled: Parser[Vector[long]] = symbol("[") ~> repSep(token(integer).label("number"), symbol(",")) <~ symbol("]")
 
 lazy val keyword: Parser[string] = lit("let") | lit("var")
 
@@ -53,7 +53,7 @@ commitPoints()
     assertEq(shown(strict.parse("xz")), "error 1:2: expected `y`, found 'z'")
     assertEq(shown(strict.parse("w")), "error 1:1: expected `x`, found 'w'")
     assertEq(shown((commit(lit("a")) | lit("b")).parse("b")), "error 1:1: expected `a`, found 'b'")
-    assertEq(shown((lit("(") ~! lit(")") ^^^ 1).rep().parse("()(]")), "error 1:4: expected `)`, found ']'")
+    assertEq(shown(rep(lit("(") ~! lit(")") ^^^ 1).parse("()(]")), "error 1:4: expected `)`, found ']'")
 
 @test("filter and failure say what they wanted")
 wanted()

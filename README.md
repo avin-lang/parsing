@@ -19,7 +19,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.1.0" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.2.0" }
 }
 ```
 
@@ -86,11 +86,11 @@ main()
 | `p.flatMap(f)` | `p`, then the parser `f(a)` | that parser's |
 | `p.filter(what, pred)` | `p`, failing where `pred` refuses its value | `p`'s |
 | `p.label(what)` | `p`, reported as expecting `what` | `p`'s |
-| `rep(p)`, `p.rep()` | `p` as many times as it succeeds, none included | `Vector[T]` |
-| `rep1(p)`, `p.rep1()` | the same, at least once | `Vector[T]` |
+| `rep(p)` | `p` as many times as it succeeds, none included | `Vector[T]` |
+| `rep1(p)` | the same, at least once | `Vector[T]` |
 | `opt(p)`, `p.opt()` | `p` or nothing | `Option[T]` |
-| `repSep(p, sep)`, `p.repSep(sep)` | `p` separated by `sep`, none included | `Vector[T]` |
-| `rep1Sep(p, sep)`, `p.rep1Sep(sep)` | the same, at least one | `Vector[T]` |
+| `repSep(p, sep)` | `p` separated by `sep`, none included | `Vector[T]` |
+| `rep1Sep(p, sep)` | the same, at least one | `Vector[T]` |
 | `chainLeft(p, op)` | `p` separated by `op`, a `Parser[(T, T) -> T]`, combined from the left | `T` |
 | `chainRight(p, op)` | the same, combined from the right | `T` |
 | `commit(p)`, `p.commit()` | `p`, whose failure fails the parse | `p`'s |

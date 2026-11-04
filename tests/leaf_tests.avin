@@ -1,7 +1,7 @@
 module tests
 
 // The leaf parsers: characters, names, digits and numbers.
-import dev.avinlang.parsing.{decimal, digits, ident, integer, isLetter, lit, satisfy, takeWhile1}
+import dev.avinlang.parsing.{decimal, digits, ident, integer, isLetter, lit, rep, satisfy, takeWhile1}
 
 @test("names begin with a letter in any script or with an underscore")
 names()
@@ -14,7 +14,7 @@ names()
 characters()
     assertEq(shown(lit('é').parse("é")), "é")
     assertEq(shown((lit('é') ~> lit('\u{1F600}') ~> lit('!')).parse("é\u{1F600}!")), "!")
-    assertEq(shown(satisfy("vowel", c -> "aeiou".contains(s"$c")).rep().parse("aei")), "[a, e, i]")
+    assertEq(shown(rep(satisfy("vowel", c -> "aeiou".contains(s"$c"))).parse("aei")), "[a, e, i]")
     assertEq(shown(takeWhile1("letter", isLetter).parse("1")), "error 1:1: expected letter, found '1'")
 
 @test("integers span the whole range of a long")
