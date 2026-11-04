@@ -3,11 +3,11 @@ module tests
 // White space belongs to the grammar: a `RegexParsers` says what it is and whether it is skipped,
 // and its `parse` and `parseAll` skip it before every token, at the end, and before a positioned
 // value. Nothing the white space parser expects is reported, and a commit inside it commits nothing.
-import dev.avinlang.parsing.{Parser, RegexParsers, elem, ident, isSpace, literal, log, positioned, rep, wholeNumber}
+import dev.avinlang.parsing.{Parser, RegexParsers, elem, ident, literal, log, positioned, rep, wholeNumber}
 
 // Comments run from `#` to the end of the line, and count as white space.
 object Commented: RegexParsers
-    override whiteSpace() -> Parser[unit] = rep(elem("white space", isSpace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace()) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
 
     lazy val entry: Parser[string] = ident ~ (literal("=") ~> ident) ^^ (match (k, v) -> s"$k=$v")
 
@@ -40,7 +40,7 @@ exact()
 spaced()
     assertEq(shown(Spaced.parseAll(literal("a") ~ literal("b"), "a  b")), "(a, b)")
     assertEq(shown(Spaced.parseAll(literal("a") ~ literal("b"), "a\nb")), "failure 1:2: expected `b`, found '\\n'")
-    assertEq(shown(Spaced.parseAll(rep(positioned(ident)) ^^ (xs -> xs.map(match (n, at) -> s"$n@$at").mkString(" ")), "a  bb c")), "a@1:1 bb@1:4 c@1:7")
+    assertEq(shown(Spaced.parseAll(rep(positioned(ident ^^ (n -> Node(n)))) ^^ (xs -> xs.map(n -> n.where()).mkString(" ")), "a  bb c")), "a@1:1 bb@1:4 c@1:7")
 
 @test("a commit or a failure inside the white space parser commits and reports nothing")
 quietWhiteSpace()

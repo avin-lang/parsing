@@ -10,9 +10,9 @@ import dev.avinlang.parsing.{Error, Failure, Parser, Success, accept, commit, er
 
 lazy val element: Parser[long] = number | list ^^ (xs -> long(xs.length()))
 
-lazy val list: Parser[Vector[long]] = literal("[") ~> repsep(element, literal(",")) <~ literal("]")
+lazy val list: Parser[List[long]] = literal("[") ~> repsep(element, literal(",")) <~ literal("]")
 
-lazy val labelled: Parser[Vector[long]] = literal("[") ~> repsep(number.withFailureMessage("number"), literal(",")) <~ literal("]")
+lazy val labelled: Parser[List[long]] = literal("[") ~> repsep(number.withFailureMessage("number"), literal(",")) <~ literal("]")
 
 lazy val keyword: Parser[string] = literal("let") | literal("var")
 
@@ -68,7 +68,7 @@ commitPoints()
     assertEq(all(strict, "w"), "failure 1:1: expected `x`, found 'w'")
     assertEq(all(commit(literal("a")) | literal("b"), "b"), "error 1:1: expected `a`, found 'b'")
     assertEq(all(rep(literal("(") ~! literal(")") ^^^ 1), "()(]"), "error 1:4: expected `)`, found ']'")
-    assertEq(all(rep(literal("a")) ~ literal("b") ||| literal("a") ~! literal("c") ^^^ (Vector.empty[string](), "c"), "ab"), "error 1:2: expected `a` or `c`, found 'b'")
+    assertEq(all(rep(literal("a")) ~ literal("b") ||| literal("a") ~! literal("c") ^^^ (List.empty[string](), "c"), "ab"), "error 1:2: expected `a` or `c`, found 'b'")
 
 @test("err fails past a commit point; failure lets the next alternative be tried")
 errAndFailure()

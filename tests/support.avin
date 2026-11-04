@@ -1,6 +1,6 @@
 module tests
 
-import dev.avinlang.parsing.{Error, Failure, Parser, ParseResult, Success, parseAll, wholeNumber}
+import dev.avinlang.parsing.{Error, Failure, Parser, ParseResult, Positional, Position, Success, parseAll, wholeNumber}
 
 // A whole number as a `long`.
 lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLong().getOrElse(0))
@@ -14,3 +14,16 @@ shown[T: Display](r: ParseResult[T]) -> string = r match
 
 // `parseAll(p, text)`, shown.
 all[T: Display](p: Parser[T], text: string) -> string = shown(parseAll(p, text))
+
+// A syntax tree node that remembers where it began.
+class Node(val text: string): Positional
+    private var at: Option[Position] = None
+
+    override pos() -> Option[Position] = at
+
+    override setPos(p: Position) = at = Some(p)
+
+    // The text and the line and column the node began at, or `?` before it has one.
+    where() -> string = at match
+        Some(p) -> s"$text@$p"
+        None -> s"$text@?"

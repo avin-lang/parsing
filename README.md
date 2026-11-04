@@ -20,7 +20,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.4.0" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.5.0" }
 }
 ```
 
@@ -58,9 +58,9 @@ lazy val expr: Parser[long] = chainl1(term, op("+", (a, b) -> a + b) | op("-", (
 main()
     for text in ["1 + 2 * 3", "2 ^ 3 ^ 2", " -(2 + 3) * -2 ", "2 * (3 + 4", "1 + * 2"]
         parseAll(expr, text) match
-            Success(n, _) -> print(s"$text = $n")
-            Failure(msg, next) -> print(s"$text: ${next.pos()}: $msg")
-            Error(msg, next) -> print(s"$text: ${next.pos()}: $msg")
+            Success(n, _) -> println(s"$text = $n")
+            Failure(msg, next) -> println(s"$text: ${next.pos()}: $msg")
+            Error(msg, next) -> println(s"$text: ${next.pos()}: $msg")
 ```
 
 ```text
@@ -87,7 +87,7 @@ The methods of a parser:
 | `p ^^^ v` | `p` | `v` |
 | `p ^? f` | `p`, failing where the `PartialFunction` `f` is not defined at its value | `f(a)` |
 | `p.^?(f, error)` | the same, the failure expecting `error(a)` | `f(a)` |
-| `p.flatMap(f)`, `p into f` | `p`, then the parser `f(a)` | that parser's |
+| `p.flatMap(f)`, `p into f`, `p >> f` | `p`, then the parser `f(a)` | that parser's |
 | `p.filter(pred)`, `p.withFilter(pred)` | `p`, failing where `pred` refuses its value | `p`'s |
 | `p.named(n)` | `p`, which shows as `Parser (n)` | `p`'s |
 | `p.withFailureMessage(msg)` | `p`, reported as expecting `msg` when it fails at its first character | `p`'s |
@@ -97,20 +97,20 @@ The functions that make a parser of others:
 
 | Form | Parses | Value |
 | --- | --- | --- |
-| `rep(p)` | `p` as many times as it succeeds, none included | `Vector[T]` |
-| `rep1(p)` | the same, at least once | `Vector[T]` |
-| `rep1(first, p)` | `first`, then `p` as many times as it succeeds | `Vector[T]` |
-| `repN(n, p)` | `p` exactly `n` times | `Vector[T]` |
-| `repsep(p, q)` | `p` separated by `q`, none included | `Vector[T]` |
-| `rep1sep(p, q)` | the same, at least one | `Vector[T]` |
+| `rep(p)` | `p` as many times as it succeeds, none included | `List[T]` |
+| `rep1(p)` | the same, at least once | `List[T]` |
+| `rep1(first, p)` | `first`, then `p` as many times as it succeeds | `List[T]` |
+| `repN(n, p)` | `p` exactly `n` times | `List[T]` |
+| `repsep(p, q)` | `p` separated by `q`, none included | `List[T]` |
+| `rep1sep(p, q)` | the same, at least one | `List[T]` |
 | `opt(p)` | `p` or nothing | `Option[T]` |
 | `chainl1(p, q)` | `p` separated by `q`, a `Parser[(T, T) -> T]`, combined from the left | `T` |
 | `chainl1(first, p, q)` | `first`, then `p` after each `q`, a `Parser[(T, U) -> T]`, combined from the left | `T` |
 | `chainr1(p, q, combine, first)` | `x₀ q₁ x₁ … qₙ xₙ`, folded from the right: `combine(x₀, f₁(x₁, … fₙ(xₙ, first)))` | `U` |
 | `commit(p)` | `p`, whose failure fails the parse | `p`'s |
-| `positioned(p)` | `p`, after white space | `(a, Position)` of where it began |
+| `positioned(p)` | `p`, after white space, its value (a `Positional`) positioned where `p` began unless it already has a position | `p`'s |
 | `guard(p)` | `p`, reading nothing | `p`'s |
-| `notFollowedBy(p)` | nothing, where `p` fails | `()` |
+| `not(p)` | nothing, where `p` fails | `()` |
 | `phrase(p)` | `p`, then white space, then the end of the text | `p`'s |
 | `log(p, name)` | `p`, printing where it was tried and what it answered | `p`'s |
 | `success(v)` | nothing | `v` |
@@ -141,11 +141,11 @@ The token parsers skip white space first:
 | `ident` | a letter or `_`, then letters, digits and `_`; letters in any script | `string` |
 | `wholeNumber` | an optional `-` and decimal digits | `string` |
 | `decimalNumber` | digits with an optional `.` and digits, or `.` and digits | `string` |
-| `floatingPointNumber` | an optional `-`, a decimal number, an optional exponent | `string` |
+| `floatingPointNumber` | an optional `-`, a decimal number, an optional exponent, an optional `f`, `F`, `d` or `D` | `string` |
 | `stringLiteral` | a double-quoted string with `\"`, `\'`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX` | `string`, as written |
 
 The numbers and strings answer their text, for the grammar to convert to the type it wants.
-`isDigit`, `isLetter` and `isSpace` are the character tests the library uses. A parser the library
+The character tests for `elem` and `acceptIf` are the core `char` methods: `c.isDigit()`, `c.isLetter()`, `c.isLetterOrDigit()`, `c.isWhitespace()`. A parser the library
 does not offer is made by giving the function: `Parser(input -> …)`, using `input.atEnd()`,
 `input.first()`, `input.offset`, `input.handleWhiteSpace()` and `input.fail(what)`.
 
@@ -177,12 +177,12 @@ script; a grammar that wants otherwise is an object that is a `RegexParsers`, ov
 ```avin
 object Config: RegexParsers
     // Comments run from `#` to the end of the line, and count as white space.
-    override whiteSpace() -> Parser[unit] = rep(elem("white space", isSpace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace()) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
 
     lazy val entry: Parser[(string, string)] = ident ~ (literal("=") ~> ident)
 
 main()
-    print(Config.parseAll(rep(Config.entry), "a = b  # one\nc = d"))
+    println(Config.parseAll(rep(Config.entry), "a = b  # one\nc = d"))
 ```
 
 An `override skipWhitespace() -> bool = false` makes a grammar read every character itself.
@@ -197,6 +197,18 @@ when the method is called, so a rule may not begin with itself, which would loop
 Each level of nesting is a few calls deep, so the depth a text can nest is bounded by the stack of
 the thread parsing it: a few thousand levels of parentheses on the main thread, more on a thread
 spawned with a larger stack.
+
+## Changes in 0.5.0
+
+| 0.4.0 | 0.5.0 |
+| --- | --- |
+| `notFollowedBy(p)` | `not(p)` |
+| `p into f` only | `p >> f` as well, at the precedence of a shift |
+| `rep`, `rep1`, `repN`, `repsep`, `rep1sep` answer a `Vector[T]` | they answer a `List[T]`; the pairs of `~` are as before |
+| `positioned(p)` answers `(T, Position)` | `positioned(p)` needs `T: Positional` and answers `T`, with its position set unless already set |
+| `floatingPointNumber` ends at the exponent | it also takes a trailing `f`, `F`, `d` or `D` |
+| `isDigit`, `isLetter`, `isSpace` exported | the core `char` methods `isDigit()`, `isLetter()`, `isLetterOrDigit()`, `isWhitespace()`; `isDigit` accepts a digit of any script |
+| `print` in the examples | `println`, since `print` no longer ends the line |
 
 ## Changes in 0.4.0
 

@@ -4,15 +4,15 @@ module tests
 // optional parts, separators, chains of one and chains into another type, look ahead, positions, a
 // parser chosen by a value, a value filtered and mapped at once, the longest of two matches, and
 // prefixes.
-import dev.avinlang.parsing.{Parser, accept, chainl1, chainr1, elem, failure, guard, ident, isDigit, isLetter, literal, notFollowedBy, opt, parse, parseAll, positioned, rep, rep1, rep1sep, repN, repsep, success, wholeNumber}
+import dev.avinlang.parsing.{Parser, Position, accept, chainl1, chainr1, elem, failure, guard, ident, literal, not, opt, parse, parseAll, positioned, rep, rep1, rep1sep, repN, repsep, success, wholeNumber}
 
 
-lazy val numbers: Parser[Vector[long]] = repsep(number, literal(","))
+lazy val numbers: Parser[List[long]] = repsep(number, literal(","))
 
-lazy val digit: Parser[char] = elem("digit", isDigit)
+lazy val digit: Parser[char] = elem("digit", c -> c.isDigit())
 
 // `if` as a keyword, not the start of a longer name.
-lazy val ifKeyword: Parser[string] = literal("if") <~ notFollowedBy(elem("letter", isLetter))
+lazy val ifKeyword: Parser[string] = literal("if") <~ not(elem("letter", c -> c.isLetter()))
 
 // `<b>text</b>`: the closing tag must repeat the opening one.
 lazy val tagged: Parser[string] = literal("<") ~> ident.flatMap(open -> literal(">") ~> ident <~ literal("</") <~ literal(open) <~ literal(">"))
@@ -31,7 +31,7 @@ repetitions()
 
 @test("rep1 with a first parser reads it once, then the other as many times as it succeeds")
 repetitionWithFirst()
-    val name = rep1(elem("letter", isLetter), elem("letter or digit", c -> isLetter(c) || isDigit(c)))
+    val name = rep1(elem("letter", c -> c.isLetter()), elem("letter or digit", c -> c.isLetterOrDigit()))
     assertEq(all(name, "a12b"), "[a, 1, 2, b]")
     assertEq(all(name, "a"), "[a]")
     assertEq(all(name, "1a"), "failure 1:1: expected letter, found '1'")
@@ -44,7 +44,7 @@ fixedRepetitions()
     assertEq(all(repN(3, digit), "12"), "failure 1:3: expected digit, found end of input")
     assertEq(all(repN(2, digit), "123"), "failure 1:3: expected end of input, found '3'")
     assertEq(all(repN(2, digit) ~ digit ^^ (match (ds, d) -> s"$ds $d"), "123"), "[1, 2] 3")
-    assertEq(all(repN(2, digit) | rep(digit) ^^^ Vector.empty[char](), "1"), "[]")
+    assertEq(all(repN(2, digit) | rep(digit) ^^^ List.empty[char](), "1"), "[]")
 
 @test("a repeated parser that reads nothing ends the repetition rather than looping")
 repetitionOfNothing()
@@ -94,9 +94,34 @@ lookAhead()
 
 @test("a positioned value carries its line and its column in characters, after white space")
 positions()
-    val located = rep(positioned(ident)) ^^ (xs -> xs.map(match (name, at) -> s"$name@$at").mkString(" "))
+    val located = rep(positioned(ident ^^ (n -> Node(n)))) ^^ (xs -> xs.map(n -> n.where()).mkString(" "))
     assertEq(all(located, "alpha\n  béta g\n\ndelta"), "alpha@1:1 béta@2:3 g@2:8 delta@4:1")
-    assertEq(all(literal("x") ~> positioned(literal("y")) ^^ (match (v, at) -> s"$v ${at.offset}"), "x  y"), "y 3")
+    val offset = literal("x") ~> positioned(literal("y") ^^ (v -> Node(v))) ^^ (n -> n.pos().map(at -> at.offset).getOrElse(-1))
+    assertEq(all(offset, "x  y"), "3")
+
+@test("positioned keeps a position the value already has, and sets one only where there is none")
+positionedOnce()
+    val first = Node("a")
+    first.setPos(Position(7, 3, 4))
+    assertEq(all(positioned(literal("a") ^^ (_ -> first)) ^^ (n -> n.where()), "  a"), "a@3:4")
+    assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.where()), "  a"), "a@1:3")
+    assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.pos().isDefined()), "a"), "true")
+    assertEq(Node("n").pos().isEmpty(), true)
+
+@test(">> is flatMap, and rep, rep1, repN, repsep and rep1sep answer a List")
+shiftAndLists()
+    assertEq(all(literal("<") ~> (ident >> (open -> literal(">") ~> ident <~ literal("</") <~ literal(open) <~ literal(">"))), "<b>bold</b>"), "bold")
+    assertEq(all(literal("<") ~> (ident >> (open -> literal(">") ~> ident <~ literal("</") <~ literal(open) <~ literal(">"))), "<b>bold</i>"), "failure 1:10: expected `b`, found 'i'")
+    val xs: Parser[List[string]] = rep(literal("a"))
+    assertEq(all(xs, "a a"), "[a, a]")
+    val ys: Parser[List[string]] = rep1(literal("a"))
+    assertEq(all(ys, "a"), "[a]")
+    val zs: Parser[List[char]] = repN(2, digit)
+    assertEq(all(zs, "12"), "[1, 2]")
+    val ws: Parser[List[long]] = rep1sep(number, literal(","))
+    assertEq(all(ws, "1,2"), "[1, 2]")
+    val vs: Parser[List[long]] = numbers
+    assertEq(all(vs, ""), "[]")
 
 @test("flatMap and into choose the next parser by the value read")
 chosenByValue()

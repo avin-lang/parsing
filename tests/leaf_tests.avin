@@ -1,7 +1,7 @@
 module tests
 
 // The leaf parsers: characters, literals, names, numbers and strings.
-import dev.avinlang.parsing.{Parser, accept, acceptIf, acceptMatch, acceptSeq, decimalNumber, elem, floatingPointNumber, ident, isDigit, isLetter, isSpace, literal, parse, rep, rep1, stringLiteral, wholeNumber}
+import dev.avinlang.parsing.{Parser, accept, acceptIf, acceptMatch, acceptSeq, decimalNumber, elem, floatingPointNumber, ident, literal, parse, rep, rep1, stringLiteral, wholeNumber}
 
 // What `parse` read of `text`: the value and the offset it stopped at.
 prefix(p: Parser[string], text: string) -> string
@@ -19,20 +19,20 @@ characters()
     assertEq(all(accept('é'), "é"), "é")
     assertEq(all(elem('é') ~> accept('\u{1F600}') ~> accept('!'), "é\u{1F600}!"), "!")
     assertEq(all(rep(elem("vowel", c -> "aeiou".contains(s"$c"))), "aei"), "[a, e, i]")
-    assertEq(all(rep1(elem("letter", isLetter)), "1"), "failure 1:1: expected letter, found '1'")
+    assertEq(all(rep1(elem("letter", c -> c.isLetter())), "1"), "failure 1:1: expected letter, found '1'")
     assertEq(all(accept('a'), " a"), "failure 1:1: expected `a`, found ' '")
-    assertEq(all(elem("space", isSpace) ~> accept('a'), "\u{3000}a"), "a")
+    assertEq(all(elem("space", c -> c.isWhitespace()) ~> accept('a'), "\u{3000}a"), "a")
 
 @test("acceptIf words its failure from the character it refused")
 acceptedIf()
-    val digit = acceptIf(isDigit, c -> s"digit, not $c")
+    val digit = acceptIf(c -> c.isDigit(), c -> s"digit, not $c")
     assertEq(all(digit, "7"), "7")
     assertEq(all(digit, "x"), "failure 1:1: expected digit, not x, found 'x'")
     assertEq(all(digit, ""), "failure 1:1: expected character, found end of input")
 
 @test("acceptMatch and accept with a partial function read a character into a value")
 acceptedMatch()
-    val digit = acceptMatch("digit", match c if isDigit(c) -> int(c) - 48)
+    val digit = acceptMatch("digit", match c if c.isDigit() -> int(c) - 48)
     assertEq(all(rep1(digit), "409"), "[4, 0, 9]")
     assertEq(all(digit, "x"), "failure 1:1: expected digit, found 'x'")
     assertEq(all(digit, ""), "failure 1:1: expected digit, found end of input")
@@ -77,6 +77,13 @@ floatingPointNumbers()
     assertEq(all(floatingPointNumber, "-.25e3"), "-.25e3")
     assertEq(prefix(floatingPointNumber, "2e+"), "2 1")
     assertEq(prefix(floatingPointNumber, "2ex"), "2 1")
+    assertEq(all(floatingPointNumber, "1.5f"), "1.5f")
+    assertEq(all(floatingPointNumber, "-2e3D"), "-2e3D")
+    assertEq(all(floatingPointNumber, "7F"), "7F")
+    assertEq(all(floatingPointNumber, ".5d"), ".5d")
+    assertEq(prefix(floatingPointNumber, "2e+f"), "2 1")
+    assertEq(prefix(floatingPointNumber, "1.5ff"), "1.5f 4")
+    assertEq(prefix(floatingPointNumber, "1.5x"), "1.5 3")
     assertEq(all(floatingPointNumber, "-x"), "failure 1:1: expected floating-point number, found '-'")
     assertEq(all(floatingPointNumber ^^ (s -> s.toReal().getOrElse(0.0)), " 1.5e2 "), "150")
 

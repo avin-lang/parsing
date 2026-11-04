@@ -2,7 +2,7 @@ module tests
 
 // Every combinator takes the parsers it is given by name: an operand is made the first time the
 // parser that combinator made runs, not when the combinator is called, and it is made once.
-import dev.avinlang.parsing.{Parser, chainl1, chainr1, commit, guard, literal, log, notFollowedBy, opt, parseAll, phrase, positioned, rep, rep1, rep1sep, repN, repsep}
+import dev.avinlang.parsing.{Parser, chainl1, chainr1, commit, guard, literal, log, not, opt, parseAll, phrase, positioned, rep, rep1, rep1sep, repN, repsep}
 
 // The names of the operands made so far.
 val made = Buffer[string]()
@@ -63,9 +63,9 @@ repetitionsByName()
 wrappersByName()
     madeOnce("opt", opt(ab("opt")), "b")
     madeOnce("commit", commit(ab("commit")), "b")
-    madeOnce("positioned", positioned(ab("positioned")), "b")
+    madeOnce("positioned", positioned(ab("positioned") ^^ (s -> Node(s))), "b")
     madeOnce("guard", guard(ab("guard")) ~> literal("b"), "b")
-    madeOnce("notFollowedBy", literal("a") <~ notFollowedBy(ab("notFollowedBy")), "a")
+    madeOnce("not", literal("a") <~ not(ab("not")), "a")
     madeOnce("phrase", phrase(ab("phrase")), "b")
     madeOnce("log", log(ab("log"), "b"), "b")
 

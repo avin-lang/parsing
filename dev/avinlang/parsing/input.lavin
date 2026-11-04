@@ -39,9 +39,9 @@ A parse ends in one of three ways, and a `ParseResult` says which:
 
 ```avin
 parseAll(wholeNumber, "12") match
-    Success(n, _) -> print(n)
-    Failure(msg, next) -> print(s"${next.pos()}: $msg")
-    Error(msg, next) -> print(s"${next.pos()}: $msg")
+    Success(n, _) -> println(n)
+    Failure(msg, next) -> println(s"${next.pos()}: $msg")
+    Error(msg, next) -> println(s"${next.pos()}: $msg")
 ```
 
 The second field of each case is matched by position. `r.next()` reaches it on any result without

@@ -15,15 +15,9 @@ under Running a parser, and read a token after it.
 
 ## Characters
 
-Letters and white space outside ASCII are a Unicode question, and the answer comes from the system
-library rather than from a table kept here. These two declarations have no body: `@sysl` binds each
-to the system library's function of that name.
-
-    @sysl("sysl.unicode.is_alpha")
-    private isUnicodeLetter(c: char) -> bool
-
-    @sysl("sysl.unicode.is_space")
-    private isUnicodeSpace(c: char) -> bool
+The character tests a grammar needs, `isDigit`, `isLetter`, `isLetterOrDigit` and `isWhitespace`,
+are methods of `char` in the core library: `elem("digit", c -> c.isDigit())`. This library keeps
+none of its own.
 
 The input is UTF-8, so moving past a character means moving past the bytes that encode it, between
 one and four.
@@ -33,31 +27,14 @@ one and four.
         val code = int(c)
         if code < 0x80 then 1 elif code < 0x800 then 2 elif code < 0x10000 then 3 else 4
 
-The character tests are public, for a grammar's own `elem` and `acceptIf`. Most text is ASCII, so
-each answers ASCII itself and asks Unicode only about the rest. `(code | 0x20)` lowercases an ASCII
-letter, so one range check covers both cases.
-
-    // Whether `c` is an ASCII decimal digit.
-    isDigit(c: char) -> bool = c >= '0' && c <= '9'
-
-    // Whether `c` is a letter, in any script.
-    isLetter(c: char) -> bool
-        val code = int(c)
-        if code < 0x80 then (code | 0x20) >= 0x61 && (code | 0x20) <= 0x7a else isUnicodeLetter(c)
-
-    // Whether `c` is white space, in any script.
-    isSpace(c: char) -> bool
-        val code = int(c)
-        if code < 0x80 then code == 0x20 || (code >= 0x09 && code <= 0x0d) else isUnicodeSpace(c)
-
 A name is what most programming languages call an identifier: a letter or `_` to begin, then
 letters, digits and `_`.
 
     // Whether `c` may begin a name: a letter or `_`.
-    private startsName(c: char) -> bool = c == '_' || isLetter(c)
+    private startsName(c: char) -> bool = c == '_' || c.isLetter()
 
     // Whether `c` may continue a name: a letter, a digit or `_`.
-    private continuesName(c: char) -> bool = c == '_' || isDigit(c) || isLetter(c)
+    private continuesName(c: char) -> bool = c == '_' || c.isLetterOrDigit()
 
 ## Helpers for reading
 
@@ -88,7 +65,7 @@ The white space every grammar skips unless it says otherwise is white space in a
 
     // White space in any script, none included.
     private lazy val spaces: Parser[unit] = Parser(input ->
-        skip(input, isSpace)
+        skip(input, c -> c.isWhitespace())
         Some(()))
 
 ## One character
@@ -129,7 +106,7 @@ same with the message worked out from the character that was refused, and `elem(
         Some(c))
 
 `acceptMatch(expected, f)` reads one character `f` is defined at and answers `f` of it, so a
-character becomes a value in one step: `acceptMatch("digit", match c if isDigit(c) -> int(c) - 48)`.
+character becomes a value in one step: `acceptMatch("digit", match c if c.isDigit() -> int(c) - 48)`.
 `accept(expected, f)` is the same.
 
     // `f` of one character `f` is defined at, described as `expected` when there is none.
@@ -235,9 +212,12 @@ A decimal number has digits, a `.` and digits, with one side of the point allowe
 
 A floating-point number is a decimal number with an optional `-` before it and an optional exponent
 after it: `e` or `E`, an optional sign, and digits. An `e` with no digits after it is not part of the
-number.
+number. A trailing `f`, `F`, `d` or `D`, which marks the precision of a floating-point literal in
+many languages, is part of the text read: `1.5f`, `2e3D`. The text is answered as written, suffix
+included, for the grammar to interpret.
 
-    // An optional `-`, a decimal number, and an optional exponent, after white space.
+    // An optional `-`, a decimal number, an optional exponent and an optional `f`, `F`, `d` or `D`,
+    // after white space.
     lazy val floatingPointNumber: Parser[string] = Parser(input ->
         input.handleWhiteSpace()
         val start = input.offset
@@ -250,6 +230,8 @@ number.
             input.offset += 1
             if byteIs(input, input.offset, 0x2b) || byteIs(input, input.offset, 0x2d) then input.offset += 1
             if skipDigits(input) == 0 then input.offset = e
+        if byteIs(input, input.offset, 0x66) || byteIs(input, input.offset, 0x46) || byteIs(input, input.offset, 0x64) || byteIs(input, input.offset, 0x44)
+            input.offset += 1
         Some(input.source.slice(start, input.offset)))
 
 ## Strings

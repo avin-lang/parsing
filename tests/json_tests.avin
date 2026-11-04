@@ -11,8 +11,8 @@ data Json
     JBool(value: bool)
     JNumber(value: real)
     JString(written: string)
-    JArray(items: Vector[Json])
-    JObject(fields: Vector[(string, Json)])
+    JArray(items: List[Json])
+    JObject(fields: List[(string, Json)])
 
 lazy val value: Parser[Json] = literal("null") ^^^ JNull
     | literal("true") ^^^ JBool(true)
