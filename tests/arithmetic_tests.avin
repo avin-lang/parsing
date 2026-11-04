@@ -1,0 +1,55 @@
+module tests
+
+// Arithmetic expressions parsed and evaluated as they are parsed: `+` and `-` below `*` and `/`,
+// below a right-grouping `^`, with unary minus and parentheses. This is the grammar the README shows.
+import dev.avinlang.parsing.{Parser, chainLeft, chainRight, defer, integer, symbol, token, whitespace}
+import avin.threads.spawn
+
+// `base` multiplied by itself `exponent` times.
+power(base: long, exponent: long) -> long
+    var result: long = 1
+    for _ in 0..<exponent
+        result *= base
+    result
+
+// An operator: the symbol, yielding the function it applies.
+op(text: string, f: (long, long) -> long) -> Parser[(long, long) -> long] = symbol(text) ^^^ f
+
+lazy val operand: Parser[long] = token(integer)
+
+lazy val atom: Parser[long] = operand
+    | symbol("(") ~> defer(expr) <~ symbol(")")
+    | symbol("-") ~> defer(atom) ^^ (n -> -n)
+
+lazy val factor: Parser[long] = chainRight(atom, op("^", power))
+
+lazy val term: Parser[long] = chainLeft(factor, op("*", (a, b) -> a * b) | op("/", (a, b) -> a / b))
+
+lazy val expr: Parser[long] = chainLeft(term, op("+", (a, b) -> a + b) | op("-", (a, b) -> a - b))
+
+lazy val calculation: Parser[long] = whitespace ~> expr
+
+@test("operators bind and group as arithmetic does")
+arithmetic()
+    assertEq(shown(calculation.parse("1 + 2 * 3")), "7")
+    assertEq(shown(calculation.parse("(1 + 2) * 3")), "9")
+    assertEq(shown(calculation.parse("2 ^ 3 ^ 2")), "512")
+    assertEq(shown(calculation.parse("10 - 4 - 3")), "3")
+    assertEq(shown(calculation.parse(" -(2 + 3) * -2 ")), "10")
+
+@test("a malformed expression names everything that could have come next")
+arithmeticErrors()
+    assertEq(shown(calculation.parse("2 * (3 + 4")), "error 1:11: expected `^`, `*`, `/`, `+`, `-` or `)`, found end of input")
+    assertEq(shown(calculation.parse("1 + * 2")), "error 1:5: expected integer, `(` or `-`, found '*'")
+
+nested(depth: int) -> string = "(".repeat(depth) + "1 + 2" + ")".repeat(depth)
+
+// Nesting is recursion: each level of parentheses is a few calls deep in the parser, so the depth a
+// grammar reaches is bounded by the stack it runs on.
+@test("2,000 levels of parentheses fit the main thread's stack, and 10,000 a thread of 64 MiB")
+depth()
+    assertEq(shown(calculation.parse(nested(2000))), "3")
+    val deep = nested(10000)
+    assertEq(shown(spawn(() -> calculation.parse(deep), stack = 67108864).join()), "3")
+    val unclosed = "(".repeat(10000) + "1" + ")".repeat(9999)
+    assertEq(shown(spawn(() -> calculation.parse(unclosed), stack = 67108864).join()), "error 1:20001: expected `^`, `*`, `/`, `+`, `-` or `)`, found end of input")

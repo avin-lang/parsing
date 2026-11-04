@@ -1,0 +1,336 @@
+# Leaf parsers
+
+The combinators in `parser.lavin` join parsers; the parsers here read text. They are the words a
+grammar is spelled with: literal text, characters, names, numbers, white space and quoted strings.
+Each is written directly against the input, moving its offset itself, rather than built from
+smaller parsers. They run for every character of every text, so they should cost little, and
+reading a number one character-parser at a time would allocate a value per digit.
+
+    module dev.avinlang.parsing
+
+## Characters
+
+Letters and white space outside ASCII are a Unicode question, and the answer comes from the system
+library rather than from a table kept here. These two declarations have no body: `@sysl` binds each
+to the system library's function of that name.
+
+    @sysl("sysl.unicode.is_alpha")
+    private isUnicodeLetter(c: char) -> bool
+
+    @sysl("sysl.unicode.is_space")
+    private isUnicodeSpace(c: char) -> bool
+
+The input is UTF-8, so moving past a character means moving past the bytes that encode it, between
+one and four.
+
+    // The number of bytes UTF-8 encodes `c` in.
+    private width(c: char) -> int
+        val code = int(c)
+        if code < 0x80 then 1 elif code < 0x800 then 2 elif code < 0x10000 then 3 else 4
+
+The character tests are public, for a grammar's own `satisfy` and `takeWhile`. Most text is ASCII,
+so each answers ASCII itself and asks Unicode only about the rest. `(code | 0x20)` lowercases an
+ASCII letter, so one range check covers both cases.
+
+    // Whether `c` is an ASCII decimal digit.
+    isDigit(c: char) -> bool = c >= '0' && c <= '9'
+
+    // Whether `c` is a letter, in any script.
+    isLetter(c: char) -> bool
+        val code = int(c)
+        if code < 0x80 then (code | 0x20) >= 0x61 && (code | 0x20) <= 0x7a else isUnicodeLetter(c)
+
+    // Whether `c` is white space, in any script.
+    isSpace(c: char) -> bool
+        val code = int(c)
+        if code < 0x80 then code == 0x20 || (code >= 0x09 && code <= 0x0d) else isUnicodeSpace(c)
+
+A name is what most programming languages call an identifier: a letter or `_` to begin, then
+letters, digits and `_`.
+
+    // Whether `c` may begin a name: a letter or `_`.
+    private startsName(c: char) -> bool = c == '_' || isLetter(c)
+
+    // Whether `c` may continue a name: a letter, a digit or `_`.
+    private continuesName(c: char) -> bool = c == '_' || isDigit(c) || isLetter(c)
+
+## Helpers for reading
+
+Numbers and strings are made of ASCII punctuation and digits, which can be tested a byte at a time
+without decoding a character. `byteIs` does that, and is false at the end of the text rather than
+trapping.
+
+    // Whether the byte at `at` is the ASCII character `b`.
+    private byteIs(input: Input, at: int, b: int) -> bool = at < input.length && int(input.text.byteAt(at)) == b
+
+    // Moves past the characters `p` accepts.
+    private skip(input: Input, p: char -> bool)
+        while !input.atEnd()
+            val c = input.current()
+            if !p(c) then return
+            input.offset += width(c)
+
+    // Moves past the ASCII digits.
+    private skipDigits(input: Input)
+        while input.offset < input.length
+            val b = int(input.text.byteAt(input.offset))
+            if b < 0x30 || b > 0x39 then return
+            input.offset += 1
+
+## Literal text
+
+`lit` reads exactly the text it is given. What it expects is the text in backquotes, worked out once
+when the parser is made rather than on every failure, so an error reads ``expected `]` ``.
+
+    // Exactly `text`.
+    lit(text: string) -> Parser[string]
+        val what = s"`$text`"
+        val n = text.byteLength()
+        Parser(input ->
+            if input.text.startsWith(text, input.offset)
+                input.offset += n
+                Some(text)
+            else input.fail(what))
+
+    // Exactly the character `c`.
+    lit(c: char) -> Parser[char]
+        val what = s"`$c`"
+        val n = width(c)
+        Parser(input ->
+            if !input.atEnd() && input.current() == c
+                input.offset += n
+                Some(c)
+            else input.fail(what))
+
+## Characters by a test
+
+`satisfy` reads one character a test accepts. A test has no name to put in an error, so the
+grammar gives one: `satisfy("vowel", c -> "aeiou".contains(s"$c"))`.
+
+    // One character `p` accepts, described as `what` when there is none.
+    satisfy(what: string, p: char -> bool) -> Parser[char] = Parser(input ->
+        if input.atEnd() then return input.fail(what)
+        val c = input.current()
+        if !p(c) then return input.fail(what)
+        input.offset += width(c)
+        Some(c))
+
+`takeWhile` reads a run of such characters and answers it as one slice of the text, with no
+character-by-character values in between. `takeWhile` accepts an empty run; `takeWhile1` needs one
+character at least, and so needs a name for its error.
+
+    // The characters `p` accepts, as many as there are, none included.
+    takeWhile(p: char -> bool) -> Parser[string] = Parser(input ->
+        val start = input.offset
+        skip(input, p)
+        Some(input.text.slice(start, input.offset)))
+
+    // The characters `p` accepts, at least one, described as `what` when there is none.
+    takeWhile1(what: string, p: char -> bool) -> Parser[string] = Parser(input ->
+        val start = input.offset
+        skip(input, p)
+        if input.offset == start then input.fail(what) else Some(input.text.slice(start, input.offset)))
+
+## Digits, names, white space and the end
+
+These are values rather than functions, since they take nothing, and `lazy` so that each is made
+once, the first time it is used.
+
+    // One ASCII decimal digit or more.
+    lazy val digits: Parser[string] = takeWhile1("digit", isDigit)
+
+    // A name: a letter or `_`, then letters, digits and `_`.
+    lazy val ident: Parser[string] = Parser(input ->
+        if input.atEnd() || !startsName(input.current()) then return input.fail("identifier")
+        val start = input.offset
+        skip(input, continuesName)
+        Some(input.text.slice(start, input.offset)))
+
+    // White space, none included.
+    lazy val whitespace: Parser[unit] = Parser(input ->
+        skip(input, isSpace)
+        Some(()))
+
+    // The end of the text.
+    lazy val eof: Parser[unit] = Parser(input -> if input.atEnd() then Some(()) else input.fail("end of input"))
+
+## Tokens
+
+Most grammars allow white space between any two tokens. The convention that keeps that out of every
+rule is to skip white space **after** each token, never before: then the only place a grammar has to
+mention it is the very start of the text, `whitespace ~> expr`. `token(p)` is `p` followed by the
+white space after it, and `symbol` is the common case of a literal token.
+
+    // `p`, then the white space after it.
+    token[T](p: Parser[T]) -> Parser[T] = Parser(input ->
+        val r = p.run(input)
+        if r is Some(_) then skip(input, isSpace)
+        r)
+
+    // Exactly `text`, then the white space after it.
+    symbol(text: string) -> Parser[string] = token(lit(text))
+
+## Numbers
+
+An integer is an optional `-` and digits. The digits are found first and converted once, as a
+slice of the text, so an integer costs one conversion however long it is. A run of digits that does
+not fit a `long` is still an integer to read, so it fails with an expectation that says why, rather
+than with `integer`, which would be puzzling beside a perfectly good row of digits.
+
+    // A decimal integer that fits a `long`, with an optional leading `-`.
+    lazy val integer: Parser[long] = Parser(input ->
+        val start = input.offset
+        if byteIs(input, start, 0x2d) then input.offset += 1
+        val first = input.offset
+        skipDigits(input)
+        if input.offset == first
+            input.offset = start
+            return input.fail("integer")
+        input.text.slice(start, input.offset).toLong() match
+            Some(n) -> Some(n)
+            None ->
+                input.offset = start
+                input.fail("integer that fits a long"))
+
+A decimal is a number as JSON writes it: `-`, digits, an optional fraction and an optional exponent.
+A fraction or exponent is part of the number only when digits follow it, so `1.` reads as `1` and
+leaves the dot for whatever comes next, a method call or the end of a sentence. Where a part turns
+out to have no digits, the offset goes back to where that part began.
+
+    // A decimal number: an optional `-`, digits, an optional fraction `.` and digits, and an optional
+    // exponent `e` or `E`, a sign and digits, as JSON writes numbers. A `.` or an `e` not followed by
+    // digits is not part of it.
+    lazy val decimal: Parser[real] = Parser(input ->
+        val start = input.offset
+        if byteIs(input, start, 0x2d) then input.offset += 1
+        val first = input.offset
+        skipDigits(input)
+        if input.offset == first
+            input.offset = start
+            return input.fail("number")
+        if byteIs(input, input.offset, 0x2e)
+            val dot = input.offset
+            input.offset += 1
+            skipDigits(input)
+            if input.offset == dot + 1 then input.offset = dot
+        if byteIs(input, input.offset, 0x65) || byteIs(input, input.offset, 0x45)
+            val e = input.offset
+            input.offset += 1
+            if byteIs(input, input.offset, 0x2b) || byteIs(input, input.offset, 0x2d) then input.offset += 1
+            val exponent = input.offset
+            skipDigits(input)
+            if input.offset == exponent then input.offset = e
+        input.text.slice(start, input.offset).toReal() match
+            Some(x) -> Some(x)
+            None ->
+                input.offset = start
+                input.fail("finite number"))
+
+## Strings
+
+`stringLiteral` reads a string in double quotes with JSON's escapes and answers the text the string
+stands for. Most strings in most texts have no escapes at all, so the parser avoids building
+anything until it meets one. It notes where the current unescaped **chunk** begins and moves on a
+byte at a time; a string with no `\` is answered as one slice of the input. The first `\` makes a
+writer, and from then on each chunk is written to it, followed by the character its escape stands
+for.
+
+A control character must be escaped in JSON, so a raw newline inside quotes is an error, reported as
+the closing `"` that was wanted before it.
+
+    // A string in double quotes, with JSON's escapes: `\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t` and
+    // `\u` with four hexadecimal digits, a pair of them for a character beyond the first 65,536. A
+    // control character must be escaped. The value is the text the string stands for.
+    lazy val stringLiteral: Parser[string] = Parser(input ->
+        if !byteIs(input, input.offset, 0x22) then return input.fail("string")
+        input.offset += 1
+        var chunk = input.offset
+        var out: Option[StringWriter] = None
+        loop
+            if input.atEnd() then return input.fail("`\"`")
+            val b = int(input.text.byteAt(input.offset))
+            if b == 0x22
+                val last = input.text.slice(chunk, input.offset)
+                input.offset += 1
+                return out match
+                    None -> Some(last)
+                    Some(w) ->
+                        w.write(last)
+                        Some(w.text())
+            if b < 0x20 then return input.fail("`\"`")
+            if b == 0x5c
+                val w = out match
+                    Some(w) -> w
+                    None ->
+                        val w = StringWriter()
+                        out = Some(w)
+                        w
+                w.write(input.text.slice(chunk, input.offset))
+                input.offset += 1
+                w.writeChar(escaped(input)?)
+                chunk = input.offset
+            else input.offset += 1)
+
+### Escapes
+
+The single-character escapes are a table. `\u` is the interesting one. Four hexadecimal digits name
+a UTF-16 code unit, and a character beyond the first 65,536 is written as two of them: a **high
+surrogate** in `d800`–`dbff`, then `\u` and a **low surrogate** in `dc00`–`dfff`. Each holds ten
+bits of the character's distance past `0x10000`. A surrogate is not a character by itself, so
+one out of place is an error. Each error is reported at the escape that is wrong: a lone low
+surrogate at its own `\`, a high one followed by anything but `\u` at what follows it, and a second
+escape that is not a low surrogate at its `\`.
+
+    // The character the escape after a `\` stands for, read past.
+    private escaped(input: Input) -> Option[char]
+        if input.atEnd() then return input.fail("escape")
+        val c = input.current()
+        val simple = c match
+            '"' -> Some('"')
+            '\\' -> Some('\\')
+            '/' -> Some('/')
+            'b' -> Some(char(8))
+            'f' -> Some(char(12))
+            'n' -> Some('\n')
+            'r' -> Some('\r')
+            't' -> Some('\t')
+            _ -> None
+        if simple is Some(_)
+            input.offset += 1
+            return simple
+        if c != 'u' then return input.fail("escape")
+        val first = input.offset - 1
+        input.offset += 1
+        val high = hex4(input)?
+        if high < 0xd800 || high > 0xdfff then return Some(char(high))
+        if high >= 0xdc00
+            input.offset = first
+            return input.fail("escape of a character or a high surrogate")
+        if !input.text.startsWith("\\u", input.offset) then return input.fail("`\\u` and a low surrogate")
+        val second = input.offset
+        input.offset += 2
+        val low = hex4(input)?
+        if low < 0xdc00 || low > 0xdfff
+            input.offset = second
+            return input.fail("escape of a low surrogate")
+        Some(char(0x10000 + ((high - 0xd800) << 10) + (low - 0xdc00)))
+
+    // The value of four hexadecimal digits, read past.
+    private hex4(input: Input) -> Option[int]
+        var value = 0
+        for _ in 0..<4
+            val d = if input.atEnd() then -1 else hexValue(int(input.text.byteAt(input.offset)))
+            if d < 0 then return input.fail("hexadecimal digit")
+            value = value * 16 + d
+            input.offset += 1
+        Some(value)
+
+A hexadecimal digit's value is its distance from `0`, `a` or `A`, plus ten for a letter: `0x57` is
+`'a' - 10`, and `0x37` is `'A' - 10`.
+
+    // The value of the hexadecimal digit `b`, or -1.
+    private hexValue(b: int) -> int
+        if b >= 0x30 && b <= 0x39 then b - 0x30
+        elif b >= 0x61 && b <= 0x66 then b - 0x57
+        elif b >= 0x41 && b <= 0x46 then b - 0x37
+        else -1

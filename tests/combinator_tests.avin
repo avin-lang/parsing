@@ -1,0 +1,86 @@
+module tests
+
+// The combinators at their edges: repetitions of nothing, a repeated parser that can succeed on
+// nothing, optional parts, separators, chains of one, look ahead, positions, a parser chosen by a
+// value, and prefixes.
+import dev.avinlang.parsing.{Parser, chainLeft, chainRight, digits, eof, guard, ident, integer, isDigit, isLetter, lit, notFollowedBy, opt, positioned, rep, rep1, rep1Sep, repSep, satisfy, success, symbol, takeWhile, token}
+
+lazy val number: Parser[long] = token(integer)
+
+lazy val numbers: Parser[Vector[long]] = number.repSep(symbol(","))
+
+// `if` as a keyword, not the start of a longer name.
+lazy val ifKeyword: Parser[string] = lit("if") <~ notFollowedBy(satisfy("letter", isLetter))
+
+// `<b>text</b>`: the closing tag must repeat the opening one.
+lazy val tagged: Parser[string] = lit("<") ~> ident.flatMap(open -> lit(">") ~> takeWhile(c -> c != '<') <~ lit("</") <~ lit(open) <~ lit(">"))
+
+@test("a repetition takes none or more, and rep1 at least one")
+repetitions()
+    assertEq(shown(rep(lit("a")).parse("")), "[]")
+    assertEq(shown(rep(lit("a")).parse("aaa")), "[a, a, a]")
+    assertEq(shown(rep1(lit("a")).parse("")), "error 1:1: expected `a`, found end of input")
+    assertEq(shown(rep1(lit("a")).parse("aa")), "[a, a]")
+    assertEq(shown(lit("ab").rep().parse("abab")), "[ab, ab]")
+    assertEq(shown(lit("ab").rep1().parse("ab")), "[ab]")
+
+@test("a repeated parser that reads nothing ends the repetition rather than looping")
+repetitionOfNothing()
+    assertEq(shown(rep(takeWhile(isDigit)).parse("")), "[]")
+    assertEq(shown((rep(takeWhile(isDigit) <~ lit(";")) ~> takeWhile(isDigit)).parse("1;22;;333")), "333")
+
+@test("values separated by a separator, which must be followed by a value")
+separated()
+    assertEq(shown(numbers.parse("")), "[]")
+    assertEq(shown(numbers.parse("7")), "[7]")
+    assertEq(shown(numbers.parse("1, 2 ,3")), "[1, 2, 3]")
+    assertEq(shown(numbers.parse("1, 2,")), "error 1:6: expected integer, found end of input")
+    assertEq(shown(repSep(number, symbol(";")).parse("4; 5")), "[4, 5]")
+    assertEq(shown(rep1Sep(number, symbol(",")).parse("")), "error 1:1: expected integer, found end of input")
+    assertEq(shown(number.rep1Sep(symbol(",")).parse("8,9")), "[8, 9]")
+
+@test("an optional part is Some when present and None when absent")
+optional()
+    assertEq(shown((opt(lit("-")) ~ digits ^^ (match (sign, d) -> s"$sign $d")).parse("12")), "None 12")
+    assertEq(shown((lit("-").opt() ~ digits ^^ (match (sign, d) -> s"$sign $d")).parse("-12")), "Some(-) 12")
+
+@test("chains combine from the left or from the right")
+chains()
+    val add = symbol("+") ^^^ ((a: long, b: long) -> a + b)
+    val minus = symbol("-") ^^^ ((a: long, b: long) -> a - b)
+    assertEq(shown(chainLeft(number, add).parse("5")), "5")
+    assertEq(shown(chainLeft(number, minus).parse("10 - 3 - 2")), "5")
+    assertEq(shown(chainRight(number, minus).parse("5")), "5")
+    assertEq(shown(chainRight(number, minus).parse("10 - 3 - 2")), "9")
+    assertEq(shown(chainLeft(number, minus).parse("10 - ")), "error 1:6: expected integer, found end of input")
+
+@test("look ahead reads nothing, and eof is the end of the text")
+lookAhead()
+    assertEq(shown((ifKeyword <~ lit(" x")).parse("if x")), "if")
+    assertEq(shown(ifKeyword.parse("iffy")), "error 1:3: unexpected 'f'")
+    assertEq(shown((guard(lit("a")) ~> lit("ab")).parse("ab")), "ab")
+    assertEq(shown((guard(lit("b")) ~> lit("ab")).parse("ab")), "error 1:1: expected `b`, found 'a'")
+    assertEq(shown((lit("a") <~ eof).parse("a")), "a")
+    assertEq(shown((lit("a") <~ eof).parsePrefix("ab").map(match (v, at) -> s"$v $at")), "error 1:2: expected end of input, found 'b'")
+
+@test("a positioned value carries its line and its column in characters")
+positions()
+    val located = positioned(token(ident)).rep() ^^ (xs -> xs.map(match (name, at) -> s"$name@$at").mkString(" "))
+    assertEq(shown(located.parse("alpha\n  béta g\n\ndelta")), "alpha@1:1 béta@2:3 g@2:8 delta@4:1")
+    assertEq(shown((lit("x") ~> lit("y").positioned() ^^ (match (v, at) -> s"$v ${at.offset}")).parse("xy")), "y 1")
+
+@test("flatMap chooses the next parser by the value read")
+chosenByValue()
+    assertEq(shown(tagged.parse("<b>bold</b>")), "bold")
+    assertEq(shown(tagged.parse("<b>bold</i>")), "error 1:10: expected `b`, found 'i'")
+
+@test("success, ^^^ and map give values of their own")
+values()
+    assertEq(shown((success(long(42)) <~ eof).parse("")), "42")
+    assertEq(shown((lit("yes") ^^^ true).parse("yes")), "true")
+    assertEq(shown(lit("abc").map(s -> s.byteLength()).parse("abc")), "3")
+
+@test("parsePrefix answers the value and the offset where it stopped")
+prefixes()
+    assertEq(shown(number.parsePrefix("12 abc").map(match (n, at) -> s"$n $at")), "12 3")
+    assertEq(shown(number.parsePrefix("abc").map(match (n, at) -> s"$n $at")), "error 1:1: expected integer, found 'a'")

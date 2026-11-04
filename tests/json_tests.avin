@@ -1,0 +1,123 @@
+module tests
+
+// JSON parsed into a data type and printed back: objects, arrays, strings with every escape,
+// numbers, `true`, `false` and `null`, nested and empty, with white space anywhere a token may be
+// followed by it. Printing a parsed document and parsing the print gives the same value, and a
+// document of more than a megabyte parses well inside the time a test is given.
+import dev.avinlang.parsing.{Parser, decimal, defer, stringLiteral, symbol, token, whitespace}
+
+data Json
+    JNull
+    JBool(value: bool)
+    JNumber(value: real)
+    JString(value: string)
+    JArray(items: Vector[Json])
+    JObject(fields: Vector[(string, Json)])
+
+lazy val value: Parser[Json] = symbol("null") ^^^ JNull
+    | symbol("true") ^^^ JBool(true)
+    | symbol("false") ^^^ JBool(false)
+    | token(decimal) ^^ (x -> JNumber(x))
+    | token(stringLiteral) ^^ (s -> JString(s))
+    | defer(array)
+    | defer(obj)
+
+lazy val array: Parser[Json] = symbol("[") ~> value.repSep(symbol(",")) <~ symbol("]") ^^ (items -> JArray(items))
+
+lazy val field: Parser[(string, Json)] = token(stringLiteral) <~ symbol(":") ~ value
+
+lazy val obj: Parser[Json] = symbol("{") ~> field.repSep(symbol(",")) <~ symbol("}") ^^ (fields -> JObject(fields))
+
+lazy val document: Parser[Json] = whitespace ~> value
+
+quote(s: string) -> string
+    val out = StringWriter()
+    out.write("\"")
+    for c in s.chars()
+        c match
+            '"' -> out.write("\\\"")
+            '\\' -> out.write("\\\\")
+            '\n' -> out.write("\\n")
+            '\t' -> out.write("\\t")
+            _ -> if int(c) < 0x20 then out.write(s"\\u00${if int(c) < 16 then "0" else "1"}${"0123456789abcdef".slice(int(c) % 16, int(c) % 16 + 1)}") else out.writeChar(c)
+    out.write("\"")
+    out.text()
+
+printed(j: Json) -> string = j match
+    JNull -> "null"
+    JBool(b) -> s"$b"
+    JNumber(x) -> s"$x"
+    JString(s) -> quote(s)
+    JArray(items) -> items.map(printed).mkString("[", ",", "]")
+    JObject(fields) -> fields.map(match (k, v) -> quote(k) + ":" + printed(v)).mkString("{", ",", "}")
+
+// `text` parsed and printed, checking that the print parses to the same value.
+roundTrip(text: string) -> string
+    document.parse(text) match
+        Ok(j) ->
+            val out = printed(j)
+            assert(document.parse(out) == Ok(j), s"$out parses to a different value")
+            out
+        Err(e) -> s"error $e"
+
+@test("literals and empty collections")
+jsonLiterals()
+    assertEq(roundTrip("null"), "null")
+    assertEq(roundTrip(" true "), "true")
+    assertEq(roundTrip("false"), "false")
+    assertEq(roundTrip("[]"), "[]")
+    assertEq(roundTrip("{}"), "{}")
+    assertEq(roundTrip("[ ]"), "[]")
+    assertEq(roundTrip("{ }"), "{}")
+    assertEq(roundTrip("[[], [[]], {}]"), "[[],[[]],{}]")
+
+@test("numbers with fractions and exponents")
+jsonNumbers()
+    assertEq(roundTrip("0"), "0")
+    assertEq(roundTrip("-12"), "-12")
+    assertEq(roundTrip("3.25"), "3.25")
+    assertEq(roundTrip("-0.5e2"), "-50")
+    assertEq(roundTrip("1E3"), "1000")
+    assertEq(roundTrip("2.5e-3"), "0.0025")
+
+@test("strings with every escape")
+escapedStrings()
+    assertEq(roundTrip("\"\""), "\"\"")
+    assertEq(roundTrip("\"plain\""), "\"plain\"")
+    assertEq(roundTrip("\"q\\\" b\\\\ s\\/ n\\n t\\t r\\r b\\b f\\f\""), "\"q\\\" b\\\\ s/ n\\n t\\t r\\u000d b\\u0008 f\\u000c\"")
+    assertEq(roundTrip("\"\\u0041\\u00e9\\u4e2d\\ud83d\\ude00\""), "\"Aé中😀\"")
+    assertEq(roundTrip("\"café \u{1F600}\""), "\"café 😀\"")
+
+@test("objects and arrays nested, with white space between tokens")
+jsonNested()
+    assertEq(roundTrip("{\"name\": \"avin\", \"tags\": [\"fast\", \"small\"], \"version\": 1, \"stable\": false, \"next\": null}"), "{\"name\":\"avin\",\"tags\":[\"fast\",\"small\"],\"version\":1,\"stable\":false,\"next\":null}")
+    assertEq(roundTrip("\n{\n  \"a\" : {\n    \"b\" : [ 1 , 2 , { \"c\" : [ ] } ]\n  }\n}\n"), "{\"a\":{\"b\":[1,2,{\"c\":[]}]}}")
+
+@test("a document of more than a megabyte")
+jsonLarge()
+    val out = StringWriter()
+    out.write("[\n")
+    for i in 0..<10000
+        if i > 0 then out.write(",\n")
+        out.write(s"  {\"id\": $i, \"name\": \"item \\\"number\\\" $i\", \"price\": ${i}.25, \"tags\": [\"a\", \"b\\n\", \"\\u00e9\"], \"ok\": true, \"none\": null}")
+    out.write("\n]\n")
+    val text = out.text()
+    assert(text.byteLength() > 1000000)
+    document.parse(text) match
+        Ok(JArray(items)) ->
+            var ids = 0.0
+            var prices = 0.0
+            var names = 0
+            for item in items
+                item match
+                    JObject(fields) ->
+                        for (k, v) in fields
+                            (k, v) match
+                                ("id", JNumber(n)) -> ids += n
+                                ("price", JNumber(p)) -> prices += p
+                                ("name", JString(s)) -> if s.startsWith("item \"number\" ") then names += 1
+                                _ -> ()
+                    _ -> ()
+            assertEq(s"${items.length()} $ids $prices $names", "10000 49995000 49997500 10000")
+        Ok(_) -> assert(false, "not an array")
+        Err(e) -> assert(false, s"$e")

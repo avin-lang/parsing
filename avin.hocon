@@ -1,0 +1,8 @@
+package {
+  name = "parsing"
+  version = "0.1.0"
+  description = "Parser combinators: grammars written as Avin expressions over small parsers"
+}
+
+dependencies {
+}

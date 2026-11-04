@@ -1,0 +1,32 @@
+module tests
+
+// The leaf parsers: characters, names, digits and numbers.
+import dev.avinlang.parsing.{decimal, digits, ident, integer, isLetter, lit, satisfy, takeWhile1}
+
+@test("names begin with a letter in any script or with an underscore")
+names()
+    assertEq(shown(digits.parse("0123")), "0123")
+    assertEq(shown(ident.parse("été_2")), "été_2")
+    assertEq(shown(ident.parse("_x9")), "_x9")
+    assertEq(shown(ident.parse("9x")), "error 1:1: expected identifier, found '9'")
+
+@test("characters are read whole, however many bytes they take")
+characters()
+    assertEq(shown(lit('é').parse("é")), "é")
+    assertEq(shown((lit('é') ~> lit('\u{1F600}') ~> lit('!')).parse("é\u{1F600}!")), "!")
+    assertEq(shown(satisfy("vowel", c -> "aeiou".contains(s"$c")).rep().parse("aei")), "[a, e, i]")
+    assertEq(shown(takeWhile1("letter", isLetter).parse("1")), "error 1:1: expected letter, found '1'")
+
+@test("integers span the whole range of a long")
+integers()
+    assertEq(shown(integer.parse("-9223372036854775808")), "-9223372036854775808")
+    assertEq(shown(integer.parse("-0")), "0")
+    assertEq(shown(integer.parse("99999999999999999999")), "error 1:1: expected integer that fits a long, found '9'")
+
+@test("a decimal is a number as JSON writes it, and stops before a bare dot or exponent")
+decimals()
+    assertEq(shown(decimal.parse("1.5E+2")), "150")
+    assertEq(shown(decimal.parse("-0.25")), "-0.25")
+    assertEq(shown(decimal.parsePrefix("1.").map(match (x, at) -> s"$x $at")), "1 1")
+    assertEq(shown(decimal.parsePrefix("2e+").map(match (x, at) -> s"$x $at")), "2 1")
+    assertEq(shown(decimal.parse("-x")), "error 1:1: expected number, found '-'")

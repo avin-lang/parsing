@@ -1,0 +1,439 @@
+# Parsers and combinators
+
+A grammar written with this library is a set of Avin values joined by operators that read like the
+grammar itself:
+
+```avin
+val number = token(integer)
+val sum = chainLeft(number, symbol("+") ^^^ ((a: long, b: long) -> a + b))
+sum.parse("1 + 2 + 3")          // Ok(6)
+```
+
+`p ~ q` is `p` then `q`, `p | q` is `p` or else `q`, and `p ^^ f` turns what `p` read into a value.
+This file defines the parser itself and every way of joining parsers. The parsers that read text
+directly, literals, names, numbers and strings, are in `leaves.lavin`; the input they read is in
+`input.lavin`.
+
+    module dev.avinlang.parsing
+
+## What a parser is
+
+A parser is a function from an `Input` to an `Option`. It answers `Some(value)` having moved the
+input's offset past what it read, or `None` having recorded at the input what it expected. That is
+the whole contract, and anything that keeps it is a parser: the library's own combinators are
+written exactly as a user's custom parser would be.
+
+`Parser` is a class rather than a bare function type so that the combinators can be its methods,
+and so that `p | q` can be written as an operator. It is covariant: a `Parser[Dog]` is a
+`Parser[Animal]`.
+
+    // A parser of a `T`. `run` reads from the input's offset; a custom parser is made by giving one.
+    class Parser[+T](val run: Input -> Option[T])
+
+## Sequence
+
+The combinators are methods of an `impl` of `Parser[T]`. Methods named by symbols bind by their
+first character, so every name with a `~` in it binds tightest, then `^^` and `^^^`, then `|`. A
+rule like `a ~ b ^^ f | c` therefore needs no parentheses: it is `((a ~ b) ^^ f) | c`.
+
+`p ~ q` runs `p`, then `q` where `p` stopped, and pairs their values. If either fails the pair
+fails, and the failing parser has already recorded what it expected.
+
+    impl[T] Parser[T]
+        // This parser, then `next`: both values.
+        ~[U](next: Parser[U]) -> Parser[(T, U)] = Parser(input ->
+            run(input) match
+                Some(a) -> next.run(input) match
+                    Some(b) -> Some((a, b))
+                    None -> None
+                None -> None)
+
+Much of a grammar is punctuation whose value nobody wants: the brackets around a list, the colon
+after a key. The arrow points at the side that is kept: `p ~> q` keeps `q`'s value and `p <~ q`
+keeps `p`'s, so `symbol("[") ~> items <~ symbol("]")` is the items alone.
+
+        // This parser, then `next`, whose value is kept.
+        ~>[U](next: Parser[U]) -> Parser[U] = Parser(input ->
+            run(input) match
+                Some(_) -> next.run(input)
+                None -> None)
+
+        // This parser, then `next`, whose value is dropped.
+        <~[U](next: Parser[U]) -> Parser[T] = Parser(input ->
+            run(input) match
+                Some(a) -> next.run(input) match
+                    Some(_) -> Some(a)
+                    None -> None
+                None -> None)
+
+`p ~! q` is `p ~ q` with a **commit point** between them. Once `p` has succeeded the grammar knows
+which rule it is in, so a failure of `q` sets the input's `committed` flag, and every alternative
+above it gives up instead of trying another branch from the start. After `lit("let") ~! ident`, a
+missing name is reported as the name `let` wanted, rather than as whatever the next kind of
+statement would have begun with.
+
+        // This parser, then `next`, committed: once this parser has succeeded, a failure of `next` fails
+        // the whole parse instead of letting an alternative be tried.
+        ~![U](next: Parser[U]) -> Parser[(T, U)] = Parser(input ->
+            run(input) match
+                Some(a) -> next.run(input) match
+                    Some(b) -> Some((a, b))
+                    None ->
+                        input.committed = true
+                        None
+                None -> None)
+
+## Choice
+
+`p | q` tries `p`, and when it fails tries `q` **from where `p` started**, however far `p` had read.
+Backtracking is a single assignment, since the offset is the only thing a parser moves. A
+committed failure is not retried.
+
+        // This parser, or `other` from the same place when this one fails before a commit point.
+        |(other: Parser[T]) -> Parser[T] = Parser(input ->
+            val start = input.offset
+            run(input) match
+                Some(a) -> Some(a)
+                None ->
+                    if input.committed then return None
+                    input.offset = start
+                    other.run(input))
+
+## Values
+
+`p ^^ f` applies `f` to what `p` read; `map` is the same under a name. `p ^^^ v` replaces it with a
+fixed value, which is how a keyword becomes a constant: `symbol("null") ^^^ JNull`.
+
+        // The value given to `f`.
+        ^^[U](f: T -> U) -> Parser[U] = map(f)
+
+        map[U](f: T -> U) -> Parser[U] = Parser(input ->
+            run(input) match
+                Some(a) -> Some(f(a))
+                None -> None)
+
+        // `value` in place of what was read.
+        ^^^[U](value: U) -> Parser[U] = Parser(input ->
+            run(input) match
+                Some(_) -> Some(value)
+                None -> None)
+
+`flatMap` lets what was read choose what is read next: a closing tag that must repeat the opening
+one, a length followed by that many items.
+
+        // The parser `f` makes of the value, run where this one stopped.
+        flatMap[U](f: T -> Parser[U]) -> Parser[U] = Parser(input ->
+            run(input) match
+                Some(a) -> f(a).run(input)
+                None -> None)
+
+`filter` refuses a value the grammar can read but does not accept: a name that is a keyword, a
+number out of range. The refusal is reported where the value began, since that is where the text
+went wrong, and `p` is moved back there so an alternative can try the same text.
+
+        // The value when `p` accepts it; otherwise a failure where this parser started, expecting `what`.
+        filter(what: string, p: T -> bool) -> Parser[T] = Parser(input ->
+            val start = input.offset
+            run(input) match
+                Some(a) if p(a) -> Some(a)
+                Some(_) ->
+                    input.offset = start
+                    input.fail(what)
+                None -> None)
+
+## Errors
+
+`label` and `commit` change what a failure says or does, not what is parsed. Both are explained
+with the input in `input.lavin`: a label replaces a rule's expectations by its name when the rule
+got no further than its first character, and a commit makes a failure final.
+
+        // This parser, reported as expecting `what` when it fails without getting past its first
+        // character, in place of the expectations of the parsers it is made of.
+        label(what: string) -> Parser[T] = Parser(input ->
+            val start = input.offset
+            val mark = input.expectationsAt(start)
+            val r = run(input)
+            if r is None then input.relabel(start, mark, what)
+            r)
+
+        // This parser, whose failure fails the whole parse.
+        commit() -> Parser[T] = Parser(input ->
+            val r = run(input)
+            if r is None then input.committed = true
+            r)
+
+## Repetition
+
+`opt` always succeeds: with `Some` of the value when the parser does, and with `None`, having read
+nothing, when it does not.
+
+        // `Some` of the value, or `None` without reading anything when this parser fails.
+        opt() -> Parser[Option[T]] = Parser(input ->
+            val start = input.offset
+            run(input) match
+                Some(a) -> Some(Some(a))
+                None ->
+                    if input.committed then return None
+                    input.offset = start
+                    Some(None))
+
+`rep` runs a parser as many times as it succeeds. One case needs care: a parser that can succeed
+without reading anything, such as `takeWhile(isDigit)`, would succeed for ever at the same place.
+So a run that reads nothing ends the repetition, and its value is not added. The loop itself is
+`repeated`, below, shared by `rep` and `rep1`.
+
+        // The values of this parser run as many times as it succeeds, none included. A run that reads
+        // nothing ends the repetition without adding its value, so a parser that can succeed on nothing
+        // does not loop.
+        rep() -> Parser[Vector[T]] = Parser(input -> repeated(self, input, Buffer[T]()))
+
+        // As `rep`, at least once.
+        rep1() -> Parser[Vector[T]] = Parser(input ->
+            run(input) match
+                Some(a) ->
+                    val items = Buffer[T]()
+                    items.add(a)
+                    repeated(self, input, items)
+                None -> None)
+
+`repSep` reads values with separators between them. A separator promises another value, so
+`[1, 2,]` fails at the `]` rather than quietly accepting the trailing comma. The loop is
+`separated`, below.
+
+        // The values of this parser separated by `sep`, none included. A separator must be followed by a
+        // value, and a separator and value that together read nothing end the repetition.
+        repSep[S](sep: Parser[S]) -> Parser[Vector[T]] = Parser(input ->
+            val start = input.offset
+            run(input) match
+                Some(a) -> separated(self, sep, input, a)
+                None ->
+                    if input.committed then return None
+                    input.offset = start
+                    Some(Vector.empty[T]()))
+
+        // As `repSep`, at least one value.
+        rep1Sep[S](sep: Parser[S]) -> Parser[Vector[T]] = Parser(input ->
+            run(input) match
+                Some(a) -> separated(self, sep, input, a)
+                None -> None)
+
+## Positions
+
+`positioned` pairs a value with where it began, for a syntax tree that reports errors of its own
+later: a type checker's "not defined" at the name's line and column.
+
+        // The value with the position it starts at.
+        positioned() -> Parser[(T, Position)] = Parser(input ->
+            val start = input.offset
+            run(input) match
+                Some(a) -> Some((a, input.position(start)))
+                None -> None)
+
+## Running a parser
+
+`parse` is how a grammar is used: it reads the whole text or fails. A parser that succeeds but
+stops short of the end has not parsed the text, so that is a failure expecting `end of input`,
+recorded alongside whatever else could have continued there. For `1 + 2 )` the error says the
+parser expected an operator or the end, and found `)`.
+
+        // The value of the whole of `text`, or the error at the furthest place any alternative reached.
+        parse(text: string) -> Result[T, ParseError]
+            val input = Input(text)
+            run(input) match
+                Some(a) if input.atEnd() -> Ok(a)
+                Some(_) ->
+                    input.expect("end of input")
+                    Err(input.error())
+                None -> Err(input.error())
+
+`parsePrefix` reads as much as the parser takes and says where it stopped, for text that goes on in
+some other language: a number at the start of a line, a header before a body.
+
+        // The value of the longest beginning of `text` this parser accepts, with the byte offset where it
+        // stopped.
+        parsePrefix(text: string) -> Result[(T, int), ParseError]
+            val input = Input(text)
+            run(input) match
+                Some(a) -> Ok((a, input.offset))
+                None -> Err(input.error())
+
+## The repetition loops
+
+Both loops have the same shape: remember where the next run starts, run, and on failure go back
+there and stop. They stop also when a run read nothing. A committed failure is not a stop but a
+failure of the whole repetition.
+
+    // `p` run as many times as it succeeds, added to `items`.
+    private repeated[T](p: Parser[T], input: Input, items: Buffer[T]) -> Option[Vector[T]]
+        loop
+            val start = input.offset
+            p.run(input) match
+                Some(a) ->
+                    if input.offset == start then break
+                    items.add(a)
+                None ->
+                    if input.committed then return None
+                    input.offset = start
+                    break
+        Some(items.toVector())
+
+In `separated` the separator is optional but the value after it is not. A separator that fails ends
+the list where it began; a value that fails after a separator fails the list, which is what makes
+a trailing separator an error. `?` returns the `None` at once.
+
+    // `first`, then the values of `p` after each `sep`.
+    private separated[T, S](p: Parser[T], sep: Parser[S], input: Input, first: T) -> Option[Vector[T]]
+        val items = Buffer[T]()
+        items.add(first)
+        loop
+            val start = input.offset
+            if sep.run(input) is None
+                if input.committed then return None
+                input.offset = start
+                break
+            val a = p.run(input)?
+            if input.offset == start then break
+            items.add(a)
+        Some(items.toVector())
+
+## The same, as functions
+
+Each of these combinators is also a function of the parser, for grammars that read better with the
+repetition in front: `rep(statement)` beside `statement.rep()`.
+
+    // `p.rep()`.
+    rep[T](p: Parser[T]) -> Parser[Vector[T]] = p.rep()
+
+    // `p.rep1()`.
+    rep1[T](p: Parser[T]) -> Parser[Vector[T]] = p.rep1()
+
+    // `p.opt()`.
+    opt[T](p: Parser[T]) -> Parser[Option[T]] = p.opt()
+
+    // `p.repSep(sep)`.
+    repSep[T, S](p: Parser[T], sep: Parser[S]) -> Parser[Vector[T]] = p.repSep(sep)
+
+    // `p.rep1Sep(sep)`.
+    rep1Sep[T, S](p: Parser[T], sep: Parser[S]) -> Parser[Vector[T]] = p.rep1Sep(sep)
+
+    // `p.commit()`.
+    commit[T](p: Parser[T]) -> Parser[T] = p.commit()
+
+    // `p.positioned()`.
+    positioned[T](p: Parser[T]) -> Parser[(T, Position)] = p.positioned()
+
+## Operators and their grouping
+
+An expression grammar is mostly levels of binary operators. Written as plain repetition each level
+would yield a list for the user to fold; `chainLeft` folds as it reads. Its operator parser yields
+the function that combines two values, so one parser can stand for several operators:
+`op("+", add) | op("-", subtract)`.
+
+`chainLeft` groups from the left, as subtraction and division do: `1 - 2 - 3` is `(1 - 2) - 3`. An
+operator with no operand after it fails the chain, since the operator promised one.
+
+    // One `p` or more separated by `op`, combined from the left by the functions `op` yields:
+    // `1 - 2 - 3` is `(1 - 2) - 3`.
+    chainLeft[T](p: Parser[T], op: Parser[(T, T) -> T]) -> Parser[T] = Parser(input ->
+        var acc = p.run(input)?
+        loop
+            val start = input.offset
+            val f = op.run(input) match
+                Some(f) -> f
+                None ->
+                    if input.committed then return None
+                    input.offset = start
+                    break
+            acc = f(acc, p.run(input)?)
+        Some(acc))
+
+`chainRight` groups from the right, as exponentiation does: `2 ^ 3 ^ 2` is `2 ^ (3 ^ 2)`. It can
+fold only once it has everything, so it collects the values and operators as it reads and folds
+them from the end. It does this in a loop rather than by recursion, so a long chain costs no stack.
+
+    // One `p` or more separated by `op`, combined from the right: `2 ^ 3 ^ 2` is `2 ^ (3 ^ 2)`.
+    chainRight[T](p: Parser[T], op: Parser[(T, T) -> T]) -> Parser[T] = Parser(input ->
+        val values = Buffer[T]()
+        val ops = Buffer[(T, T) -> T]()
+        values.add(p.run(input)?)
+        loop
+            val start = input.offset
+            val f = op.run(input) match
+                Some(f) -> f
+                None ->
+                    if input.committed then return None
+                    input.offset = start
+                    break
+            ops.add(f)
+            values.add(p.run(input)?)
+        var acc = values(values.length() - 1)
+        var i = ops.length() - 1
+        while i >= 0
+            acc = ops(i)(values(i), acc)
+            i -= 1
+        Some(acc))
+
+## Parsers of nothing
+
+`success` reads nothing and yields a value; `failure` reads nothing and fails. They are the two
+ends of a choice: a default at the end of a list of alternatives, or a branch of `flatMap` that
+refuses.
+
+    // Succeeds with `value`, reading nothing.
+    success[T](value: T) -> Parser[T] = Parser(input -> Some(value))
+
+    // Fails, expecting `what`.
+    failure[T](what: string) -> Parser[T] = Parser(input -> input.fail(what))
+
+## Recursive grammars
+
+A grammar refers to itself: an expression contains parenthesised expressions. Module-level rules are
+`lazy val`s, each made the first time it is read, but making `expr` would read `atom`, which reads
+`expr` again before it is complete. `defer` breaks the cycle. Its parameter is by name, so `defer(expr)`
+does not read `expr` when it is called; it makes a parser that reads `expr` the first time it runs,
+long after every rule is complete, and keeps it. Every cycle of rules needs one `defer` somewhere
+on it.
+
+    // The parser `p` names, found the first time it runs rather than where `defer` is called, so a
+    // grammar can refer to a rule declared after it or to itself:
+    //
+    //     lazy val expr: Parser[long] = chainLeft(term, addOp)
+    //     lazy val atom: Parser[long] = token(integer) | symbol("(") ~> defer(expr) <~ symbol(")")
+    defer[T](p: -> Parser[T]) -> Parser[T]
+        var made: Option[Parser[T]] = None
+        Parser(input ->
+            val q = made match
+                Some(q) -> q
+                None ->
+                    val q = p
+                    made = Some(q)
+                    q
+            q.run(input))
+
+Each level of nesting is a few calls deep, so how deep a text can nest is bounded by the stack of
+the thread parsing it. An arithmetic grammar takes a few thousand levels of parentheses on the main
+thread, and a parse run on a thread spawned with a larger stack goes as deep as that stack allows.
+
+## Looking ahead
+
+Two parsers look at the text without reading it. `notFollowedBy(p)` succeeds where `p` fails: `if`
+followed by a letter is the start of a name like `iffy`, not the keyword. It restores the commit
+flag too, since a commit inside a look ahead commits nothing outside it.
+
+    // Succeeds without reading anything where `p` fails, and fails where `p` succeeds.
+    notFollowedBy[T](p: Parser[T]) -> Parser[unit] = Parser(input ->
+        val start = input.offset
+        val committed = input.committed
+        val r = p.run(input)
+        input.offset = start
+        input.committed = committed
+        if r is None then Some(()) else None)
+
+`guard(p)` succeeds where `p` does, with its value, and leaves the offset where it was.
+
+    // The value of `p`, without reading anything: a look ahead.
+    guard[T](p: Parser[T]) -> Parser[T] = Parser(input ->
+        val start = input.offset
+        val r = p.run(input)
+        input.offset = start
+        r)

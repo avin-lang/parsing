@@ -1,0 +1,73 @@
+module tests
+
+// A failed parse reports the furthest place any alternative reached, as a line and a column counted
+// in characters, with every distinct thing that could have continued the text there, in the order
+// the grammar tried them, and what was found. `label` names a rule in place of what it is made of,
+// a commit point stops backtracking, and `filter`, `failure` and the strings say what they wanted.
+import dev.avinlang.parsing.{Parser, commit, defer, failure, ident, integer, lit, stringLiteral, symbol, token, whitespace}
+
+lazy val element: Parser[long] = token(integer) | defer(list) ^^ (xs -> long(xs.length()))
+
+lazy val list: Parser[Vector[long]] = symbol("[") ~> element.repSep(symbol(",")) <~ symbol("]")
+
+lazy val labelled: Parser[Vector[long]] = symbol("[") ~> token(integer).label("number").repSep(symbol(",")) <~ symbol("]")
+
+lazy val keyword: Parser[string] = lit("let") | lit("var")
+
+lazy val name: Parser[string] = ident.filter("name that is not a keyword", n -> n != "let" && n != "var")
+
+@test("the error is at the furthest place reached, with everything expected there")
+furthest()
+    assertEq(shown(list.parse("[1, 2,\n  3 4]")), "error 2:5: expected `,` or `]`, found '4'")
+    assertEq(shown(list.parse("[1, 2, ]")), "error 1:8: expected integer or `[`, found ']'")
+    assertEq(shown(list.parse("[1, [2, 3]")), "error 1:11: expected `,` or `]`, found end of input")
+    assertEq(shown(list.parse("")), "error 1:1: expected `[`, found end of input")
+    assertEq(shown(list.parse("[1] 2")), "error 1:5: expected end of input, found '2'")
+    assertEq(shown((whitespace ~> lit("a")).parse("  \n  b")), "error 2:3: expected `a`, found 'b'")
+
+@test("a label names a failure that got no further than the rule's first character")
+labels()
+    assertEq(shown(labelled.parse("[1, x]")), "error 1:5: expected number, found 'x'")
+    val angled = (symbol("<") ~> token(integer) <~ symbol(">")).label("angled number")
+    assertEq(shown(angled.parse("x")), "error 1:1: expected angled number, found 'x'")
+    assertEq(shown(angled.parse("<x")), "error 1:2: expected integer, found 'x'")
+    assertEq(shown(angled.parse("<1 x")), "error 1:4: expected `>`, found 'x'")
+    assertEq(shown((angled | symbol("(") ^^^ long(0)).parse("x")), "error 1:1: expected angled number or `(`, found 'x'")
+
+@test("an error's position has an offset in bytes and a column in characters")
+errorParts()
+    list.parse("[1,\n\u00e9\u00e9]") match
+        Err(e) -> assertEq(s"${e.position.offset} ${e.position.line} ${e.position.column} ${e.expected} ${e.found}", "4 2 1 [integer, `[`] 'é'")
+        Ok(_) -> assert(false, "parsed")
+    assertEq(shown(token(stringLiteral).parse("\"\u00e9\u{1F600}\" x")), "error 1:6: expected end of input, found 'x'")
+
+@test("the same expectation reached twice at one place is reported once")
+once()
+    assertEq(shown((lit("a") ~ lit("b") ^^^ 1 | lit("a") ~ lit("b") ~ lit("c") ^^^ 2 | lit("a") ~ lit("d") ^^^ 3).parse("ax")), "error 1:2: expected `b` or `d`, found 'x'")
+
+@test("a commit point stops the next alternative from being tried")
+commitPoints()
+    val loose = lit("x") ~ lit("y") ^^^ 1 | lit("x") ~ lit("z") ^^^ 2
+    val strict = lit("x") ~! lit("y") ^^^ 1 | lit("x") ~ lit("z") ^^^ 2
+    assertEq(shown(loose.parse("xz")), "2")
+    assertEq(shown(strict.parse("xz")), "error 1:2: expected `y`, found 'z'")
+    assertEq(shown(strict.parse("w")), "error 1:1: expected `x`, found 'w'")
+    assertEq(shown((commit(lit("a")) | lit("b")).parse("b")), "error 1:1: expected `a`, found 'b'")
+    assertEq(shown((lit("(") ~! lit(")") ^^^ 1).rep().parse("()(]")), "error 1:4: expected `)`, found ']'")
+
+@test("filter and failure say what they wanted")
+wanted()
+    assertEq(shown(keyword.parse("val")), "error 1:1: expected `let` or `var`, found 'v'")
+    assertEq(shown(name.parse("let")), "error 1:1: expected name that is not a keyword, found 'l'")
+    assertEq(shown(name.parse("letter")), "letter")
+    assertEq(shown(failure[int]("anything at all").parse("x")), "error 1:1: expected anything at all, found 'x'")
+
+@test("a malformed string is reported where it goes wrong")
+malformedStrings()
+    assertEq(shown(stringLiteral.parse("\"abc")), "error 1:5: expected `\"`, found end of input")
+    assertEq(shown(stringLiteral.parse("\"a\nb\"")), "error 1:3: expected `\"`, found '\\n'")
+    assertEq(shown(stringLiteral.parse("\"a\\qb\"")), "error 1:4: expected escape, found 'q'")
+    assertEq(shown(stringLiteral.parse("\"\\u12g4\"")), "error 1:6: expected hexadecimal digit, found 'g'")
+    assertEq(shown(stringLiteral.parse("\"\\udc00\"")), "error 1:2: expected escape of a character or a high surrogate, found '\\\\'")
+    assertEq(shown(stringLiteral.parse("\"\\ud800x\"")), "error 1:8: expected `\\u` and a low surrogate, found 'x'")
+    assertEq(shown(stringLiteral.parse("\"\\ud800\\u0041\"")), "error 1:8: expected escape of a low surrogate, found '\\\\'")

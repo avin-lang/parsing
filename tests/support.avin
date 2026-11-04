@@ -1,0 +1,8 @@
+module tests
+
+import dev.avinlang.parsing.ParseError
+
+// A parse's result as one line: the value displayed, or `error` and the error.
+shown[T: Display](r: Result[T, ParseError]) -> string = r match
+    Ok(v) -> s"$v"
+    Err(e) -> s"error $e"
