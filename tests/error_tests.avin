@@ -2,72 +2,118 @@ module tests
 
 // A failed parse reports the furthest place any alternative reached, as a line and a column counted
 // in characters, with every distinct thing that could have continued the text there, in the order
-// the grammar tried them, and what was found. `label` names a rule in place of what it is made of,
-// a commit point stops backtracking, and `filter`, `failure` and the strings say what they wanted.
-import dev.avinlang.parsing.{Parser, commit, failure, ident, integer, lit, rep, repSep, stringLiteral, symbol, token, whitespace}
+// the grammar tried them, and what was found. `withFailureMessage` names a rule in place of what it
+// is made of, a commit point stops backtracking and makes the result an `Error`, and `filter`,
+// `failure`, `err` and the strings say what they wanted.
+import dev.avinlang.parsing.{Error, Failure, Parser, Success, accept, commit, err, failure, ident, literal, parse, parseAll, rep, repsep, stringLiteral, wholeNumber}
 
-lazy val element: Parser[long] = token(integer) | list ^^ (xs -> long(xs.length()))
 
-lazy val list: Parser[Vector[long]] = symbol("[") ~> repSep(element, symbol(",")) <~ symbol("]")
+lazy val element: Parser[long] = number | list ^^ (xs -> long(xs.length()))
 
-lazy val labelled: Parser[Vector[long]] = symbol("[") ~> repSep(token(integer).label("number"), symbol(",")) <~ symbol("]")
+lazy val list: Parser[Vector[long]] = literal("[") ~> repsep(element, literal(",")) <~ literal("]")
 
-lazy val keyword: Parser[string] = lit("let") | lit("var")
+lazy val labelled: Parser[Vector[long]] = literal("[") ~> repsep(number.withFailureMessage("number"), literal(",")) <~ literal("]")
 
-lazy val name: Parser[string] = ident.filter("name that is not a keyword", n -> n != "let" && n != "var")
+lazy val keyword: Parser[string] = literal("let") | literal("var")
+
+lazy val name: Parser[string] = ident.filter(n -> n != "let" && n != "var").withFailureMessage("name that is not a keyword")
 
 @test("the error is at the furthest place reached, with everything expected there")
 furthest()
-    assertEq(shown(list.parse("[1, 2,\n  3 4]")), "error 2:5: expected `,` or `]`, found '4'")
-    assertEq(shown(list.parse("[1, 2, ]")), "error 1:8: expected integer or `[`, found ']'")
-    assertEq(shown(list.parse("[1, [2, 3]")), "error 1:11: expected `,` or `]`, found end of input")
-    assertEq(shown(list.parse("")), "error 1:1: expected `[`, found end of input")
-    assertEq(shown(list.parse("[1] 2")), "error 1:5: expected end of input, found '2'")
-    assertEq(shown((whitespace ~> lit("a")).parse("  \n  b")), "error 2:3: expected `a`, found 'b'")
+    assertEq(all(list, "[1, 2,\n  3 4]"), "failure 2:5: expected `,` or `]`, found '4'")
+    assertEq(all(list, "[1, 2, ]"), "failure 1:8: expected whole number or `[`, found ']'")
+    assertEq(all(list, "[1, [2, 3]"), "failure 1:11: expected `,` or `]`, found end of input")
+    assertEq(all(list, ""), "failure 1:1: expected `[`, found end of input")
+    assertEq(all(list, "[1] 2"), "failure 1:5: expected end of input, found '2'")
+    assertEq(all(literal("a"), "  \n  b"), "failure 2:3: expected `a`, found 'b'")
 
-@test("a label names a failure that got no further than the rule's first character")
-labels()
-    assertEq(shown(labelled.parse("[1, x]")), "error 1:5: expected number, found 'x'")
-    val angled = (symbol("<") ~> token(integer) <~ symbol(">")).label("angled number")
-    assertEq(shown(angled.parse("x")), "error 1:1: expected angled number, found 'x'")
-    assertEq(shown(angled.parse("<x")), "error 1:2: expected integer, found 'x'")
-    assertEq(shown(angled.parse("<1 x")), "error 1:4: expected `>`, found 'x'")
-    assertEq(shown((angled | symbol("(") ^^^ long(0)).parse("x")), "error 1:1: expected angled number or `(`, found 'x'")
+@test("withFailureMessage names a failure that got no further than the rule's first character")
+failureMessages()
+    assertEq(all(labelled, "[1, x]"), "failure 1:5: expected number, found 'x'")
+    val angled = (literal("<") ~> number <~ literal(">")).withFailureMessage("angled number")
+    assertEq(all(angled, "x"), "failure 1:1: expected angled number, found 'x'")
+    assertEq(all(angled, "<x"), "failure 1:2: expected whole number, found 'x'")
+    assertEq(all(angled, "<1 x"), "failure 1:4: expected `>`, found 'x'")
+    assertEq(all(angled | literal("(") ^^^ long(0), "x"), "failure 1:1: expected angled number or `(`, found 'x'")
+    assertEq(all(commit(literal("a")).withFailureMessage("letter a"), "b"), "error 1:1: expected `a`, found 'b'")
+    val tab = accept('\t').withFailureMessage("tab")
+    assertEq(all(literal("a") ~ tab, "a x"), "failure 1:2: expected tab, found ' '")
+    assertEq(all(literal("a") ~ number.withFailureMessage("count"), "a  \n x"), "failure 2:2: expected count, found 'x'")
 
-@test("an error's position has an offset in bytes and a column in characters")
+@test("withErrorMessage names a failure past a commit point, wherever it happened")
+errorMessages()
+    val call = (literal("f") ~! (literal("(") ~ literal(")"))).withErrorMessage("call of f")
+    val other = literal("g") ^^^ ("g", ("(", ")"))
+    assertEq(all(call | other, "f(x"), "error 1:3: expected call of f, found 'x'")
+    assertEq(all(call | other, "x"), "failure 1:1: expected `f` or `g`, found 'x'")
+    assertEq(all(literal("a").withErrorMessage("never"), "b"), "failure 1:1: expected `a`, found 'b'")
+
+@test("an error's next input has a position with an offset in bytes and a column in characters")
 errorParts()
-    list.parse("[1,\n\u00e9\u00e9]") match
-        Err(e) -> assertEq(s"${e.position.offset} ${e.position.line} ${e.position.column} ${e.expected} ${e.found}", "4 2 1 [integer, `[`] 'é'")
-        Ok(_) -> assert(false, "parsed")
-    assertEq(shown(token(stringLiteral).parse("\"\u00e9\u{1F600}\" x")), "error 1:6: expected end of input, found 'x'")
+    parseAll(list, "[1,\n\u00e9\u00e9]") match
+        Failure(msg, next) -> assertEq(s"${next.offset} ${next.pos().line} ${next.pos().column} $msg", "4 2 1 expected whole number or `[`, found 'é'")
+        _ -> assert(false, "not a failure")
+    assertEq(all(stringLiteral, "\"\u00e9\u{1F600}\" x"), "failure 1:6: expected end of input, found 'x'")
 
 @test("the same expectation reached twice at one place is reported once")
 once()
-    assertEq(shown((lit("a") ~ lit("b") ^^^ 1 | lit("a") ~ lit("b") ~ lit("c") ^^^ 2 | lit("a") ~ lit("d") ^^^ 3).parse("ax")), "error 1:2: expected `b` or `d`, found 'x'")
+    assertEq(all(literal("a") ~ literal("b") ^^^ 1 | literal("a") ~ literal("b") ~ literal("c") ^^^ 2 | literal("a") ~ literal("d") ^^^ 3, "ax"), "failure 1:2: expected `b` or `d`, found 'x'")
 
-@test("a commit point stops the next alternative from being tried")
+@test("a commit point stops the next alternative from being tried, and the result is an Error")
 commitPoints()
-    val loose = lit("x") ~ lit("y") ^^^ 1 | lit("x") ~ lit("z") ^^^ 2
-    val strict = lit("x") ~! lit("y") ^^^ 1 | lit("x") ~ lit("z") ^^^ 2
-    assertEq(shown(loose.parse("xz")), "2")
-    assertEq(shown(strict.parse("xz")), "error 1:2: expected `y`, found 'z'")
-    assertEq(shown(strict.parse("w")), "error 1:1: expected `x`, found 'w'")
-    assertEq(shown((commit(lit("a")) | lit("b")).parse("b")), "error 1:1: expected `a`, found 'b'")
-    assertEq(shown(rep(lit("(") ~! lit(")") ^^^ 1).parse("()(]")), "error 1:4: expected `)`, found ']'")
+    val loose = literal("x") ~ literal("y") ^^^ 1 | literal("x") ~ literal("z") ^^^ 2
+    val strict = literal("x") ~! literal("y") ^^^ 1 | literal("x") ~ literal("z") ^^^ 2
+    assertEq(all(loose, "xz"), "2")
+    assertEq(all(strict, "xz"), "error 1:2: expected `y`, found 'z'")
+    assertEq(all(strict, "w"), "failure 1:1: expected `x`, found 'w'")
+    assertEq(all(commit(literal("a")) | literal("b"), "b"), "error 1:1: expected `a`, found 'b'")
+    assertEq(all(rep(literal("(") ~! literal(")") ^^^ 1), "()(]"), "error 1:4: expected `)`, found ']'")
+    assertEq(all(rep(literal("a")) ~ literal("b") ||| literal("a") ~! literal("c") ^^^ (Vector.empty[string](), "c"), "ab"), "error 1:2: expected `a` or `c`, found 'b'")
+
+@test("err fails past a commit point; failure lets the next alternative be tried")
+errAndFailure()
+    val division = literal("/") ~> (literal("0") ~> err[long]("divisor that is not zero") | number)
+    assertEq(all(division | literal("/") ~> literal("0") ^^^ long(0), "/0"), "error 1:3: expected divisor that is not zero, found end of input")
+    assertEq(all(division, "/4"), "4")
+    assertEq(all(failure[long]("anything") | number, "4"), "4")
+    assertEq(all(err[long]("nothing") | number, "4"), "error 1:1: expected nothing, found '4'")
 
 @test("filter and failure say what they wanted")
 wanted()
-    assertEq(shown(keyword.parse("val")), "error 1:1: expected `let` or `var`, found 'v'")
-    assertEq(shown(name.parse("let")), "error 1:1: expected name that is not a keyword, found 'l'")
-    assertEq(shown(name.parse("letter")), "letter")
-    assertEq(shown(failure[int]("anything at all").parse("x")), "error 1:1: expected anything at all, found 'x'")
+    assertEq(all(keyword, "val"), "failure 1:1: expected `let` or `var`, found 'v'")
+    assertEq(all(name, "let"), "failure 1:1: expected name that is not a keyword, found 'l'")
+    assertEq(all(name, "letter"), "letter")
+    assertEq(all(ident.filter(n -> n != "let"), "let"), "failure 1:1: expected value the filter accepts, found 'l'")
+    assertEq(all(ident.withFilter(n -> n != "let") | literal("let") ^^^ "keyword", "let"), "keyword")
+    assertEq(all(failure[int]("anything at all"), "x"), "failure 1:1: expected anything at all, found 'x'")
 
 @test("a malformed string is reported where it goes wrong")
 malformedStrings()
-    assertEq(shown(stringLiteral.parse("\"abc")), "error 1:5: expected `\"`, found end of input")
-    assertEq(shown(stringLiteral.parse("\"a\nb\"")), "error 1:3: expected `\"`, found '\\n'")
-    assertEq(shown(stringLiteral.parse("\"a\\qb\"")), "error 1:4: expected escape, found 'q'")
-    assertEq(shown(stringLiteral.parse("\"\\u12g4\"")), "error 1:6: expected hexadecimal digit, found 'g'")
-    assertEq(shown(stringLiteral.parse("\"\\udc00\"")), "error 1:2: expected escape of a character or a high surrogate, found '\\\\'")
-    assertEq(shown(stringLiteral.parse("\"\\ud800x\"")), "error 1:8: expected `\\u` and a low surrogate, found 'x'")
-    assertEq(shown(stringLiteral.parse("\"\\ud800\\u0041\"")), "error 1:8: expected escape of a low surrogate, found '\\\\'")
+    assertEq(all(stringLiteral, "\"abc"), "failure 1:5: expected `\"`, found end of input")
+    assertEq(all(stringLiteral, "\"a\nb\""), "failure 1:3: expected `\"`, found '\\n'")
+    assertEq(all(stringLiteral, "\"a\\qb\""), "failure 1:4: expected escape, found 'q'")
+    assertEq(all(stringLiteral, "\"\\u12g4\""), "failure 1:6: expected hexadecimal digit, found 'g'")
+    assertEq(all(stringLiteral, "\"\\/\""), "failure 1:3: expected escape, found '/'")
+    assertEq(all(stringLiteral, "x"), "failure 1:1: expected string, found 'x'")
+
+@test("a result answers whether it succeeded, its value, its rest of the input, and shows itself")
+results()
+    val good = parse(number, "12 x")
+    val bad = parse(number, "x")
+    assertEq(s"${good.successful()} ${good.isEmpty()} ${bad.successful()} ${bad.isEmpty()}", "true false false true")
+    assertEq(s"${good.get()} ${good.getOrElse(0)} ${bad.getOrElse(-1)}", "12 12 -1")
+    assertEq(s"${good.map(n -> n * 2)}", "[1:3] parsed: 24")
+    assertEq(s"${bad.map(n -> n * 2)}", "[1:1] failure: expected whole number, found 'x'")
+    assertEq(s"${parseAll(literal("a") ~! literal("b"), "ac")}", "[1:2] error: expected `b`, found 'c'")
+    assertEq(s"${good.next().offset} ${good.next().first()} ${bad.next().atEnd()}", "2   false")
+    good match
+        Success(n, next) -> assertEq(s"$n ${next.pos()}", "12 1:3")
+        _ -> assert(false, "failed")
+    parseAll(literal("a") ~! literal("b"), "ac") match
+        Error(msg, _) -> assertEq(msg, "expected `b`, found 'c'")
+        _ -> assert(false, "not an error")
+
+@test("a named parser shows as its name")
+names()
+    assertEq(s"${literal("+").named("plus")}", "Parser (plus)")
+    assertEq(all(literal("+").named("plus"), "-"), "failure 1:1: expected `+`, found '-'")

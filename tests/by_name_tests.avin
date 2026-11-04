@@ -2,7 +2,7 @@ module tests
 
 // Every combinator takes the parsers it is given by name: an operand is made the first time the
 // parser that combinator made runs, not when the combinator is called, and it is made once.
-import dev.avinlang.parsing.{Parser, chainLeft, chainRight, commit, guard, lit, notFollowedBy, opt, positioned, rep, rep1, rep1Sep, repSep, token}
+import dev.avinlang.parsing.{Parser, chainl1, chainr1, commit, guard, literal, log, notFollowedBy, opt, parseAll, phrase, positioned, rep, rep1, rep1sep, repN, repsep}
 
 // The names of the operands made so far.
 val made = Buffer[string]()
@@ -21,53 +21,65 @@ madeCount(name: string) -> int
 // `p` has not made the operand `name` yet, makes it on its first run, and keeps it for the next.
 madeOnce[T](name: string, p: Parser[T], text: string)
     assert(madeCount(name) == 0, s"$name was made when its combinator was called")
-    assert(p.parse(text) is Ok(_), s"$name: the first parse of `$text` failed")
-    assert(p.parse(text) is Ok(_), s"$name: the second parse of `$text` failed")
+    assert(parseAll(p, text).successful(), s"$name: the first parse of `$text` failed")
+    assert(parseAll(p, text).successful(), s"$name: the second parse of `$text` failed")
     assert(madeCount(name) == 1, s"$name was made ${madeCount(name)} times")
 
-ab(name: string) -> Parser[string] = noted(name, lit("b"))
+ab(name: string) -> Parser[string] = noted(name, literal("b"))
 
-@test("the operand of a sequence is made when the sequence first runs, and kept")
+one(name: string) -> Parser[int] = noted(name, literal("1") ^^^ 1)
+
+plus(name: string) -> Parser[(int, int) -> int] = noted(name, literal("+") ^^^ ((a: int, b: int) -> a + b))
+
+@test("the operand of a sequence or a choice is made when it first runs, and kept")
 sequencesByName()
-    madeOnce("~", lit("a") ~ ab("~"), "ab")
-    madeOnce("~>", lit("a") ~> ab("~>"), "ab")
-    madeOnce("<~", lit("a") <~ ab("<~"), "ab")
-    madeOnce("~!", lit("a") ~! ab("~!"), "ab")
-    madeOnce("|", lit("a") | ab("|"), "b")
+    madeOnce("~", literal("a") ~ ab("~"), "ab")
+    madeOnce("~>", literal("a") ~> ab("~>"), "ab")
+    madeOnce("<~", literal("a") <~ ab("<~"), "ab")
+    madeOnce("~!", literal("a") ~! ab("~!"), "ab")
+    madeOnce("|", literal("a") | ab("|"), "b")
+    madeOnce("|||", literal("a") ||| ab("|||"), "b")
 
 @test("the parsers a repetition is given are made when it first runs, and kept")
 repetitionsByName()
     madeOnce("rep", rep(ab("rep")), "bb")
     madeOnce("rep1", rep1(ab("rep1")), "bb")
-    madeOnce("repSep", repSep(ab("repSep"), noted("repSep sep", lit(","))), "b,b")
-    assertEq(madeCount("repSep sep"), 1)
-    madeOnce("rep1Sep", rep1Sep(ab("rep1Sep"), noted("rep1Sep sep", lit(","))), "b,b")
-    assertEq(madeCount("rep1Sep sep"), 1)
-    madeOnce("chainLeft", chainLeft(noted("chainLeft", lit("1") ^^^ 1), noted("chainLeft op", lit("+") ^^^ ((a: int, b: int) -> a + b))), "1+1")
-    assertEq(madeCount("chainLeft op"), 1)
-    madeOnce("chainRight", chainRight(noted("chainRight", lit("1") ^^^ 1), noted("chainRight op", lit("+") ^^^ ((a: int, b: int) -> a + b))), "1+1")
-    assertEq(madeCount("chainRight op"), 1)
+    madeOnce("rep1 first", rep1(ab("rep1 first"), noted("rep1 then", literal("c"))), "bcc")
+    assertEq(madeCount("rep1 then"), 1)
+    madeOnce("repN", repN(2, ab("repN")), "bb")
+    madeOnce("repsep", repsep(ab("repsep"), noted("repsep sep", literal(","))), "b,b")
+    assertEq(madeCount("repsep sep"), 1)
+    madeOnce("rep1sep", rep1sep(ab("rep1sep"), noted("rep1sep sep", literal(","))), "b,b")
+    assertEq(madeCount("rep1sep sep"), 1)
+    madeOnce("chainl1", chainl1(one("chainl1"), plus("chainl1 op")), "1+1")
+    assertEq(madeCount("chainl1 op"), 1)
+    madeOnce("chainl1 first", chainl1(one("chainl1 first"), one("chainl1 then"), plus("chainl1 first op")), "1+1+1")
+    assertEq(madeCount("chainl1 then"), 1)
+    assertEq(madeCount("chainl1 first op"), 1)
+    madeOnce("chainr1", chainr1(one("chainr1"), plus("chainr1 op"), (a: int, b: int) -> a + b, 0), "1+1")
+    assertEq(madeCount("chainr1 op"), 1)
 
-@test("the parser given to opt, commit, positioned, a look ahead or token is made when it first runs")
+@test("the parser given to opt, commit, positioned, a look ahead, phrase or log is made when it first runs")
 wrappersByName()
     madeOnce("opt", opt(ab("opt")), "b")
     madeOnce("commit", commit(ab("commit")), "b")
     madeOnce("positioned", positioned(ab("positioned")), "b")
-    madeOnce("guard", guard(ab("guard")) ~> lit("b"), "b")
-    madeOnce("notFollowedBy", lit("a") <~ notFollowedBy(ab("notFollowedBy")), "a")
-    madeOnce("token", token(ab("token")), "b  ")
+    madeOnce("guard", guard(ab("guard")) ~> literal("b"), "b")
+    madeOnce("notFollowedBy", literal("a") <~ notFollowedBy(ab("notFollowedBy")), "a")
+    madeOnce("phrase", phrase(ab("phrase")), "b")
+    madeOnce("log", log(ab("log"), "b"), "b")
 
 // Rules that refer to each other and to themselves through every kind of combinator, with no rule
 // complete when another first mentions it.
-lazy val brackets: Parser[int] = lit("(") ~> rep(brackets) <~ lit(")") ^^ (xs -> xs.length())
-lazy val chained: Parser[int] = lit("a") ~> opt(chained) ^^ (o -> o match
+lazy val brackets: Parser[int] = literal("(") ~> rep(brackets) <~ literal(")") ^^ (xs -> xs.length())
+lazy val chained: Parser[int] = literal("a") ~> opt(chained) ^^ (o -> o match
     Some(n) -> n + 1
     None -> 1)
-lazy val sums: Parser[int] = chainLeft(summand, lit("+") ^^^ ((a: int, b: int) -> a + b))
-lazy val summand: Parser[int] = lit("1") ^^^ 1 | lit("[") ~> sums <~ lit("]")
+lazy val sums: Parser[int] = chainl1(summand, literal("+") ^^^ ((a: int, b: int) -> a + b))
+lazy val summand: Parser[int] = literal("1") ^^^ 1 | literal("[") ~> sums <~ literal("]")
 
 @test("rules refer to each other in any order, through any combinator")
 recursiveRules()
-    assertEq(shown(brackets.parse("(()()())")), "3")
-    assertEq(shown(chained.parse("aaaa")), "4")
-    assertEq(shown(sums.parse("1+[1+1]+[[1]]")), "4")
+    assertEq(all(brackets, "(()()())"), "3")
+    assertEq(all(chained, "aaaa"), "4")
+    assertEq(all(sums, "1+[1+1]+[[1]]"), "4")

@@ -1,32 +1,88 @@
 module tests
 
-// The leaf parsers: characters, names, digits and numbers.
-import dev.avinlang.parsing.{decimal, digits, ident, integer, isLetter, lit, rep, satisfy, takeWhile1}
+// The leaf parsers: characters, literals, names, numbers and strings.
+import dev.avinlang.parsing.{Parser, accept, acceptIf, acceptMatch, acceptSeq, decimalNumber, elem, floatingPointNumber, ident, isDigit, isLetter, isSpace, literal, parse, rep, rep1, stringLiteral, wholeNumber}
+
+// What `parse` read of `text`: the value and the offset it stopped at.
+prefix(p: Parser[string], text: string) -> string
+    val r = parse(p, text)
+    if r.successful() then s"${r.get()} ${r.next().offset}" else shown(r)
 
 @test("names begin with a letter in any script or with an underscore")
-names()
-    assertEq(shown(digits.parse("0123")), "0123")
-    assertEq(shown(ident.parse("été_2")), "été_2")
-    assertEq(shown(ident.parse("_x9")), "_x9")
-    assertEq(shown(ident.parse("9x")), "error 1:1: expected identifier, found '9'")
+identifiers()
+    assertEq(all(ident, "été_2"), "été_2")
+    assertEq(all(ident, "  _x9"), "_x9")
+    assertEq(all(ident, "9x"), "failure 1:1: expected identifier, found '9'")
 
-@test("characters are read whole, however many bytes they take")
+@test("characters are read whole, however many bytes they take, and white space is not skipped")
 characters()
-    assertEq(shown(lit('é').parse("é")), "é")
-    assertEq(shown((lit('é') ~> lit('\u{1F600}') ~> lit('!')).parse("é\u{1F600}!")), "!")
-    assertEq(shown(rep(satisfy("vowel", c -> "aeiou".contains(s"$c"))).parse("aei")), "[a, e, i]")
-    assertEq(shown(takeWhile1("letter", isLetter).parse("1")), "error 1:1: expected letter, found '1'")
+    assertEq(all(accept('é'), "é"), "é")
+    assertEq(all(elem('é') ~> accept('\u{1F600}') ~> accept('!'), "é\u{1F600}!"), "!")
+    assertEq(all(rep(elem("vowel", c -> "aeiou".contains(s"$c"))), "aei"), "[a, e, i]")
+    assertEq(all(rep1(elem("letter", isLetter)), "1"), "failure 1:1: expected letter, found '1'")
+    assertEq(all(accept('a'), " a"), "failure 1:1: expected `a`, found ' '")
+    assertEq(all(elem("space", isSpace) ~> accept('a'), "\u{3000}a"), "a")
 
-@test("integers span the whole range of a long")
-integers()
-    assertEq(shown(integer.parse("-9223372036854775808")), "-9223372036854775808")
-    assertEq(shown(integer.parse("-0")), "0")
-    assertEq(shown(integer.parse("99999999999999999999")), "error 1:1: expected integer that fits a long, found '9'")
+@test("acceptIf words its failure from the character it refused")
+acceptedIf()
+    val digit = acceptIf(isDigit, c -> s"digit, not $c")
+    assertEq(all(digit, "7"), "7")
+    assertEq(all(digit, "x"), "failure 1:1: expected digit, not x, found 'x'")
+    assertEq(all(digit, ""), "failure 1:1: expected character, found end of input")
 
-@test("a decimal is a number as JSON writes it, and stops before a bare dot or exponent")
-decimals()
-    assertEq(shown(decimal.parse("1.5E+2")), "150")
-    assertEq(shown(decimal.parse("-0.25")), "-0.25")
-    assertEq(shown(decimal.parsePrefix("1.").map(match (x, at) -> s"$x $at")), "1 1")
-    assertEq(shown(decimal.parsePrefix("2e+").map(match (x, at) -> s"$x $at")), "2 1")
-    assertEq(shown(decimal.parse("-x")), "error 1:1: expected number, found '-'")
+@test("acceptMatch and accept with a partial function read a character into a value")
+acceptedMatch()
+    val digit = acceptMatch("digit", match c if isDigit(c) -> int(c) - 48)
+    assertEq(all(rep1(digit), "409"), "[4, 0, 9]")
+    assertEq(all(digit, "x"), "failure 1:1: expected digit, found 'x'")
+    assertEq(all(digit, ""), "failure 1:1: expected digit, found end of input")
+    val sign = accept("sign", match
+        '+' -> 1
+        '-' -> -1)
+    assertEq(all(sign, "-"), "-1")
+    assertEq(all(sign, "*"), "failure 1:1: expected sign, found '*'")
+
+@test("acceptSeq and accept of a list read the characters in order")
+acceptedSequences()
+    assertEq(all(acceptSeq("abé".chars()), "abé"), "[a, b, é]")
+    assertEq(all(acceptSeq("abc".chars()), "abd"), "failure 1:3: expected `c`, found 'd'")
+    assertEq(all(accept(['x', 'y'].toList()), "xy"), "[x, y]")
+    assertEq(all(acceptSeq("".chars()), ""), "[]")
+
+@test("a literal skips white space before it")
+literals()
+    assertEq(all(literal("ab") ~ literal("cd"), "ab \n cd"), "(ab, cd)")
+    assertEq(all(literal("ab"), "a"), "failure 1:1: expected `ab`, found 'a'")
+    assertEq(all(literal(""), "   "), "")
+
+@test("a whole number is an optional minus and digits, as text")
+wholeNumbers()
+    assertEq(all(wholeNumber, "-9223372036854775808"), "-9223372036854775808")
+    assertEq(all(wholeNumber, "007"), "007")
+    assertEq(all(wholeNumber, "-"), "failure 1:1: expected whole number, found '-'")
+    assertEq(prefix(wholeNumber, "12.5"), "12 2")
+
+@test("a decimal number may leave one side of its point empty, but not both")
+decimalNumbers()
+    assertEq(all(decimalNumber, "12"), "12")
+    assertEq(all(decimalNumber, "12.5"), "12.5")
+    assertEq(all(decimalNumber, "12."), "12.")
+    assertEq(all(decimalNumber, ".5"), ".5")
+    assertEq(all(decimalNumber, "."), "failure 1:1: expected decimal number, found '.'")
+    assertEq(all(decimalNumber, "-1"), "failure 1:1: expected decimal number, found '-'")
+
+@test("a floating-point number has a sign, a decimal number and an exponent, the exponent only with digits")
+floatingPointNumbers()
+    assertEq(all(floatingPointNumber, "-1.5E+2"), "-1.5E+2")
+    assertEq(all(floatingPointNumber, "-.25e3"), "-.25e3")
+    assertEq(prefix(floatingPointNumber, "2e+"), "2 1")
+    assertEq(prefix(floatingPointNumber, "2ex"), "2 1")
+    assertEq(all(floatingPointNumber, "-x"), "failure 1:1: expected floating-point number, found '-'")
+    assertEq(all(floatingPointNumber ^^ (s -> s.toReal().getOrElse(0.0)), " 1.5e2 "), "150")
+
+@test("a string literal is the text as written, quotes and escapes included")
+strings()
+    assertEq(all(stringLiteral, "\"\""), "\"\"")
+    assertEq(all(stringLiteral, "  \"plain\""), "\"plain\"")
+    assertEq(all(stringLiteral, "\"q\\\" a\\' b\\\\ n\\n t\\t r\\r b\\b f\\f u\\u00e9\""), "\"q\\\" a\\' b\\\\ n\\n t\\t r\\r b\\b f\\f u\\u00e9\"")
+    assertEq(all(stringLiteral, "\"café \u{1F600}\""), "\"café \u{1F600}\"")

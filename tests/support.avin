@@ -1,8 +1,16 @@
 module tests
 
-import dev.avinlang.parsing.ParseError
+import dev.avinlang.parsing.{Error, Failure, Parser, ParseResult, Success, parseAll, wholeNumber}
 
-// A parse's result as one line: the value displayed, or `error` and the error.
-shown[T: Display](r: Result[T, ParseError]) -> string = r match
-    Ok(v) -> s"$v"
-    Err(e) -> s"error $e"
+// A whole number as a `long`.
+lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLong().getOrElse(0))
+
+// A parse's result as one line: the value displayed, or `failure` or `error`, the position and the
+// message.
+shown[T: Display](r: ParseResult[T]) -> string = r match
+    Success(v, _) -> s"$v"
+    Failure(m, n) -> s"failure ${n.pos()}: $m"
+    Error(m, n) -> s"error ${n.pos()}: $m"
+
+// `parseAll(p, text)`, shown.
+all[T: Display](p: Parser[T], text: string) -> string = shown(parseAll(p, text))

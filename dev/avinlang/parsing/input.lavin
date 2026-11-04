@@ -1,9 +1,9 @@
-# Input, positions and errors
+# Input, positions and results
 
 This file is the ground the rest of the library stands on: the text being parsed, how far into it
-a parser has got, and what is reported when the text is not what the grammar wants. It is a
-literate Avin file, so everything indented four columns is the program and everything at the margin
-is this explanation, which the compiler never reads.
+a parser has got, what is skipped as white space, and what a parse answers. It is a literate Avin
+file, so everything indented four columns is the program and everything at the margin is this
+explanation, which the compiler never reads.
 
     module dev.avinlang.parsing
 
@@ -24,44 +24,78 @@ clicked through to its place.
     impl Display for Position
         display(out: Writer, spec: FormatSpec) = out.write(s"$line:$column")
 
-## Errors
+## What a parse answers
 
-When a parse fails, many alternatives have usually failed, at many places. The one worth reporting
-is the **furthest**: every alternative that stopped earlier was wrong about the text sooner, and the
-text up to the furthest failure is, by definition, something the grammar can read. So a
-`ParseError` holds the furthest position reached, *everything* that could have continued the text
-there, and what was found instead.
+A parse ends in one of three ways, and a `ParseResult` says which:
 
-    // Why a parse failed: the furthest position any alternative reached, everything that could have
-    // continued the text there, in the order the grammar tried them, and what was found instead (a
-    // character in its quoted, escaped form, or `end of input`).
-    data ParseError(position: Position, expected: Vector[string], found: string)
+- `Success(result, next)`: the parser read something, and `result` is its value. `next` is the
+  input where it stopped.
+- `Failure(msg, next)`: no alternative of the grammar could read the text. `next` is the input at
+  the furthest place any alternative reached, and `msg` says what could have continued the text
+  there and what was found instead.
+- `Error(msg, next)`: the same, but final: the grammar passed a commit point (`~!`, `commit`,
+  `err`) and then failed, so no other alternative was tried. Its message names what the committed
+  rule wanted.
 
-The expectations are kept in the order the grammar tried them, which is the order the grammar's
-author wrote the alternatives in, so the message lists them in an order that person recognises.
-They are joined the way a sentence joins them: `a`, `a or b`, `a, b or c`. An error that expected
-nothing in particular, which happens when a look ahead refuses a character, says only what it
-found.
+```avin
+parseAll(wholeNumber, "12") match
+    Success(n, _) -> print(n)
+    Failure(msg, next) -> print(s"${next.pos()}: $msg")
+    Error(msg, next) -> print(s"${next.pos()}: $msg")
+```
 
-    impl ParseError
-        // The error as one line: `3:14: expected `)` or `,`, found 'x'`.
-        message() -> string
-            val out = StringWriter()
-            out.write(s"${position.line}:${position.column}: ")
-            val n = expected.length()
-            if n == 0
-                out.write("unexpected ")
-            else
-                out.write("expected ")
-                for i in 0..<n
-                    if i > 0 then out.write(if i == n - 1 then " or " else ", ")
-                    out.write(expected(i))
-                out.write(", found ")
-            out.write(found)
-            out.text()
+The second field of each case is matched by position. `r.next()` reaches it on any result without
+taking the result apart.
 
-    impl Display for ParseError
-        display(out: Writer, spec: FormatSpec) = out.write(message())
+    // The outcome of a parse: `Success` with the value read, or `Failure` or `Error`, which is a
+    // failure past a commit point, with a message. Each holds the input where the parse ended:
+    // after the value, or at the furthest place reached.
+    data ParseResult[+T]
+        Success(result: T, input: Input)
+        Failure(msg: string, input: Input)
+        Error(msg: string, input: Input)
+
+A result is mostly taken apart by `match`, but the common questions have methods: whether it
+succeeded, its value with a default, and its value changed by a function.
+
+    impl[T] ParseResult[T]
+        // The input where the parse ended: after the value on success, at the furthest place reached
+        // otherwise.
+        next() -> Input = self match
+            Success(_, n) -> n
+            Failure(_, n) -> n
+            Error(_, n) -> n
+
+        // Whether the parse succeeded.
+        successful() -> bool = self is Success(_, _)
+
+        // Whether the parse failed: the opposite of `successful`.
+        isEmpty() -> bool = !successful()
+
+        // The value, which traps when the parse failed.
+        get() -> T = self match
+            Success(a, _) -> a
+            _ -> fail("no result: the parse failed")
+
+        // The value, or `default`, evaluated only when the parse failed.
+        getOrElse(default: -> T) -> T = self match
+            Success(a, _) -> a
+            _ -> default
+
+        // The value given to `f`; a failure stays as it is.
+        map[U](f: T -> U) -> ParseResult[U] = self match
+            Success(a, n) -> Success(f(a), n)
+            Failure(m, n) -> Failure(m, n)
+            Error(m, n) -> Error(m, n)
+
+A result shows as its position, what kind it is, and the value or the message:
+`[1:3] parsed: 42`, ``[2:5] failure: expected `,` or `]`, found '4'``.
+
+    impl[T: Display] Display for ParseResult[T]
+        display(out: Writer, spec: FormatSpec) = self match
+            Success(a, n) -> out.write(s"[${n.pos()}] parsed: $a")
+            Failure(m, n) -> out.write(s"[${n.pos()}] failure: $m")
+            Error(m, n) -> out.write(s"[${n.pos()}] error: $m")
 
 ## The input
 
@@ -76,13 +110,17 @@ A commit point is where the grammar knows which rule it is in, so that a failure
 there is no point trying the next alternative from the start, and the error should name what the
 committed rule wanted.
 
+Finally it carries the grammar's **white space**: the parser that `literal`, the token parsers,
+`positioned` and `phrase` skip before they read, or `None` where nothing is skipped. It comes from
+the grammar that started the parse, as `RegexParsers` in `parser.lavin` describes.
+
     // The text a parser reads and the state of reading it: the byte offset of the next character, the
-    // furthest offset at which anything failed with what was expected there, and whether a failure has
-    // passed a commit point. Parsers read and move `offset`; an alternative that fails is retried from
-    // where it started.
-    class Input(val text: string)
+    // furthest offset at which anything failed with what was expected there, whether a failure has
+    // passed a commit point, and the white space skipped before each token. Parsers read and move
+    // `offset`; an alternative that fails is retried from where it started.
+    class Input(val source: string, val whiteSpace: Option[Parser[unit]] = Some(spaces))
         // The text's length in bytes.
-        val length = text.byteLength()
+        val length = source.byteLength()
         // The byte offset of the next character to read.
         var offset = 0
         // Set when a parser fails after a commit point: no alternative is tried after it and the whole
@@ -91,20 +129,46 @@ committed rule wanted.
 
 What has failed furthest, and what was expected there, are private: parsers record a failure with
 `expect` and `fail` below and never read the record back. `known` is the last position the input
-worked out, explained with `position`.
+worked out, explained with `position`. `skipping` is set while the white space parser runs.
 
         private var furthest = -1
         private val expectations = Buffer[string]()
         // The last position worked out, from which the next one is counted when it lies further on.
         private var known = Position(0, 1, 1)
+        // Whether the white space parser is running.
+        private var skipping = false
 
-These two are what a hand-written parser needs to look at the text.
+These three are what a hand-written parser needs to look at the text.
 
         // Whether every character has been read.
         atEnd() -> bool = offset >= length
 
         // The character at `offset`, which traps at the end of the text.
-        current() -> char = text.charAt(offset)
+        first() -> char = source.charAt(offset)
+
+        // The position of `offset`.
+        pos() -> Position = position(offset)
+
+### White space
+
+`handleWhiteSpace` moves past the grammar's white space. The white space parser is a parser like
+any other, so it may be written with `literal` or `rep`, and those must not skip white space
+themselves, or skipping would never end: while it runs, `handleWhiteSpace` does nothing. Nothing it
+expects is recorded either. White space ends where it fails to read more, and that failure is no
+part of what the text got wrong. A white space parser that fails reads nothing.
+
+        // Moves past the grammar's white space, if it skips any.
+        handleWhiteSpace()
+            if skipping then return
+            whiteSpace match
+                Some(ws) ->
+                    val start = offset
+                    val wasCommitted = committed
+                    skipping = true
+                    if ws.run(self) is None then offset = start
+                    skipping = false
+                    committed = wasCommitted
+                None -> ()
 
 ### Recording what was expected
 
@@ -113,8 +177,9 @@ keeping, since the text is right up to there: a failure further on replaces them
 same place joins them, and a failure before it is forgotten.
 
         // Records that `what` was expected at `offset`. Only the furthest offset's expectations are kept,
-        // since the text is right up to there.
+        // since the text is right up to there. Nothing is recorded while white space is skipped.
         expect(what: string)
+            if skipping then return
             if offset > furthest
                 furthest = offset
                 expectations.clear()
@@ -130,17 +195,17 @@ does both and reads as the last line of a parser that gives up: `else input.fail
             expect(what)
             None
 
-### Labels
+### Failure messages
 
 A rule made of many parts fails with the expectations of its parts: an expression that fails at its
 first character expects an integer, `(`, `-`, and whatever else can begin one. Often the better
-message names the rule instead: *expected expression*. A label does that, but only for a failure
-that got no further than the rule's first character. A failure further in has expectations that say
-more than the rule's name.
+message names the rule instead: *expected expression*. `withFailureMessage` does that, but only for
+a failure that got no further than the rule's first character. A failure further in has
+expectations that say more than the rule's name.
 
-Replacing works in two steps. Before the rule runs, the label notes how many expectations are
+Replacing works in two steps. Before the rule runs, the input notes how many expectations are
 already recorded at its start. If the rule fails and nothing got further, the ones the rule added
-are dropped and the label's name takes their place.
+are dropped and the message takes their place.
 
         // The number of expectations recorded at offset `at`: -1 when nothing has failed that far yet.
         expectationsAt(at: int) -> int = if furthest < at then -1 else expectations.length()
@@ -152,6 +217,15 @@ are dropped and the label's name takes their place.
             val keep = if mark < 0 then 0 else mark
             while expectations.length() > keep
                 expectations.remove(expectations.length() - 1)
+            expectations.add(what)
+
+A committed failure is final wherever it happened, so `withErrorMessage` replaces everything
+expected at the furthest place.
+
+        // Replaces everything expected at the furthest place reached by `what`.
+        reword(what: string)
+            if furthest < 0 then return
+            expectations.clear()
             expectations.add(what)
 
 ### Lines and columns
@@ -172,7 +246,7 @@ character starts at every other byte, and only those advance the column.
             var line = from.line
             var column = from.column
             while i < at
-                val b = int(text.byteAt(i))
+                val b = int(source.byteAt(i))
                 if b == 0x0a
                     line += 1
                     column = 1
@@ -182,18 +256,39 @@ character starts at every other byte, and only those advance the column.
             known = Position(at, line, column)
             known
 
-### The error
+### The result
 
-When the parse is over, the furthest failure becomes the error. Two alternatives can expect the same
-thing at the same place, as `a ~ b | a ~ b ~ c` does, so the expectations are listed once each, in
-the order they were first recorded. What was found is the character's `debug` form, quoted and
-escaped, so a newline shows as `'\n'` rather than breaking the message across lines.
+When the parse is over, what the parser answered becomes the result. A failure is reported at the
+furthest place reached, and the input is left there as the result's `next`.
 
-        // The error the parse reports: the furthest failure, with every distinct expectation there.
-        error() -> ParseError
+The expectations are listed in the order the grammar tried them, which is the order its author wrote
+the alternatives in, and once each, since two alternatives can expect the same thing at the same
+place, as `a ~ b | a ~ b ~ c` does. They are joined the way a sentence joins them: `a`, `a or b`,
+`a, b or c`. What was found is the character's `debug` form, quoted and escaped, so a newline shows
+as `'\n'` rather than breaking the message across lines. A failure that expected nothing in
+particular, which happens when a look ahead refuses a character, says only what it found.
+
+        // What a parse that answered `r` reports: its value, or the furthest failure with every distinct
+        // expectation there, an `Error` when a commit point was passed.
+        result[T](r: Option[T]) -> ParseResult[T]
+            r match
+                Some(a) -> return Success(a, self)
+                None -> ()
             val at = if furthest < 0 then offset else furthest
             val seen = Buffer[string]()
             for e in expectations
                 if !seen.contains(e) then seen.add(e)
-            val found = if at >= length then "end of input" else debug(text.charAt(at))
-            ParseError(position(at), seen.toVector(), found)
+            val found = if at >= length then "end of input" else debug(source.charAt(at))
+            val out = StringWriter()
+            val n = seen.length()
+            if n == 0
+                out.write("unexpected ")
+            else
+                out.write("expected ")
+                for i in 0..<n
+                    if i > 0 then out.write(if i == n - 1 then " or " else ", ")
+                    out.write(seen(i))
+                out.write(", found ")
+            out.write(found)
+            offset = at
+            if committed then Error(out.text(), self) else Failure(out.text(), self)

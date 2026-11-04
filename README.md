@@ -7,11 +7,12 @@ else `q`, and `p ^^ f` turns what `p` read into a value.
 The library is written as literate Avin. Its three source files are Markdown documents that explain
 the design as they go, and are worth reading in this order:
 
-1. [`input.lavin`](dev/avinlang/parsing/input.lavin): the text being parsed, positions, and how
-   errors are gathered.
-2. [`parser.lavin`](dev/avinlang/parsing/parser.lavin): the parser and every combinator.
+1. [`input.lavin`](dev/avinlang/parsing/input.lavin): the text being parsed, positions, white space,
+   and what a parse answers.
+2. [`parser.lavin`](dev/avinlang/parsing/parser.lavin): the parser, every combinator, and running a
+   grammar.
 3. [`leaves.lavin`](dev/avinlang/parsing/leaves.lavin): the parsers that read text directly:
-   literals, names, numbers and JSON strings.
+   characters, literals, names, numbers and strings.
 
 ## Using it
 
@@ -19,7 +20,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.3.0" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.4.0" }
 }
 ```
 
@@ -28,10 +29,10 @@ and import from the module `dev.avinlang.parsing`.
 ## An example
 
 Arithmetic expressions, evaluated as they are parsed: `+` and `-` below `*` and `/`, below a
-right-grouping `^`, with unary minus and parentheses.
+right-grouping `^`, with unary minus and parentheses. White space between tokens is skipped.
 
 ```avin
-import dev.avinlang.parsing.{Parser, chainLeft, chainRight, integer, symbol, token, whitespace}
+import dev.avinlang.parsing.{Error, Failure, Parser, Success, chainl1, chainr1, literal, parseAll, wholeNumber}
 
 power(base: long, exponent: long) -> long
     var result: long = 1
@@ -39,28 +40,27 @@ power(base: long, exponent: long) -> long
         result *= base
     result
 
-// An operator: the symbol, yielding the function it applies.
-op(text: string, f: (long, long) -> long) -> Parser[(long, long) -> long] = symbol(text) ^^^ f
+// An operator: the literal, yielding the function it applies.
+op(text: string, f: (long, long) -> long) -> Parser[(long, long) -> long] = literal(text) ^^^ f
 
-lazy val number: Parser[long] = token(integer)
+lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLong().getOrElse(0))
 
 lazy val atom: Parser[long] = number
-    | symbol("(") ~> expr <~ symbol(")")
-    | symbol("-") ~> atom ^^ (n -> -n)
+    | literal("(") ~> expr <~ literal(")")
+    | literal("-") ~> atom ^^ (n -> -n)
 
-lazy val factor: Parser[long] = chainRight(atom, op("^", power))
+lazy val factor: Parser[long] = chainr1(atom, op("^", power), power, 1)
 
-lazy val term: Parser[long] = chainLeft(factor, op("*", (a, b) -> a * b) | op("/", (a, b) -> a / b))
+lazy val term: Parser[long] = chainl1(factor, op("*", (a, b) -> a * b) | op("/", (a, b) -> a / b))
 
-lazy val expr: Parser[long] = chainLeft(term, op("+", (a, b) -> a + b) | op("-", (a, b) -> a - b))
-
-lazy val calculation: Parser[long] = whitespace ~> expr
+lazy val expr: Parser[long] = chainl1(term, op("+", (a, b) -> a + b) | op("-", (a, b) -> a - b))
 
 main()
     for text in ["1 + 2 * 3", "2 ^ 3 ^ 2", " -(2 + 3) * -2 ", "2 * (3 + 4", "1 + * 2"]
-        calculation.parse(text) match
-            Ok(n) -> print(s"$text = $n")
-            Err(e) -> print(s"$text: $e")
+        parseAll(expr, text) match
+            Success(n, _) -> print(s"$text = $n")
+            Failure(msg, next) -> print(s"$text: ${next.pos()}: $msg")
+            Error(msg, next) -> print(s"$text: ${next.pos()}: $msg")
 ```
 
 ```text
@@ -68,10 +68,12 @@ main()
 2 ^ 3 ^ 2 = 512
  -(2 + 3) * -2  = 10
 2 * (3 + 4: 1:11: expected `^`, `*`, `/`, `+`, `-` or `)`, found end of input
-1 + * 2: 1:5: expected integer, `(` or `-`, found '*'
+1 + * 2: 1:5: expected whole number, `(` or `-`, found '*'
 ```
 
 ## Combinators
+
+The methods of a parser:
 
 | Form | Parses | Value |
 | --- | --- | --- |
@@ -80,68 +82,110 @@ main()
 | `p <~ q` | `p` then `q` | `p`'s |
 | `p ~! q` | `p` then `q`, committed: once `p` has succeeded, `q`'s failure fails the parse | `(a, b)` |
 | `p \| q` | `p`, or else `q` from where `p` started | either's |
+| `p \|\|\| q` | `p` and `q` from the same place, whichever reads further; `p` when they tie | either's |
 | `p ^^ f`, `p.map(f)` | `p` | `f(a)` |
 | `p ^^^ v` | `p` | `v` |
-| `p.flatMap(f)` | `p`, then the parser `f(a)` | that parser's |
-| `p.filter(what, pred)` | `p`, failing where `pred` refuses its value | `p`'s |
-| `p.label(what)` | `p`, reported as expecting `what` | `p`'s |
+| `p ^? f` | `p`, failing where the `PartialFunction` `f` is not defined at its value | `f(a)` |
+| `p.^?(f, error)` | the same, the failure expecting `error(a)` | `f(a)` |
+| `p.flatMap(f)`, `p into f` | `p`, then the parser `f(a)` | that parser's |
+| `p.filter(pred)`, `p.withFilter(pred)` | `p`, failing where `pred` refuses its value | `p`'s |
+| `p.named(n)` | `p`, which shows as `Parser (n)` | `p`'s |
+| `p.withFailureMessage(msg)` | `p`, reported as expecting `msg` when it fails at its first character | `p`'s |
+| `p.withErrorMessage(msg)` | `p`, reported as expecting `msg` when it fails past a commit point | `p`'s |
+
+The functions that make a parser of others:
+
+| Form | Parses | Value |
+| --- | --- | --- |
 | `rep(p)` | `p` as many times as it succeeds, none included | `Vector[T]` |
 | `rep1(p)` | the same, at least once | `Vector[T]` |
-| `opt(p)`, `p.opt()` | `p` or nothing | `Option[T]` |
-| `repSep(p, sep)` | `p` separated by `sep`, none included | `Vector[T]` |
-| `rep1Sep(p, sep)` | the same, at least one | `Vector[T]` |
-| `chainLeft(p, op)` | `p` separated by `op`, a `Parser[(T, T) -> T]`, combined from the left | `T` |
-| `chainRight(p, op)` | the same, combined from the right | `T` |
-| `commit(p)`, `p.commit()` | `p`, whose failure fails the parse | `p`'s |
-| `positioned(p)`, `p.positioned()` | `p` | `(a, Position)` of where it began |
+| `rep1(first, p)` | `first`, then `p` as many times as it succeeds | `Vector[T]` |
+| `repN(n, p)` | `p` exactly `n` times | `Vector[T]` |
+| `repsep(p, q)` | `p` separated by `q`, none included | `Vector[T]` |
+| `rep1sep(p, q)` | the same, at least one | `Vector[T]` |
+| `opt(p)` | `p` or nothing | `Option[T]` |
+| `chainl1(p, q)` | `p` separated by `q`, a `Parser[(T, T) -> T]`, combined from the left | `T` |
+| `chainl1(first, p, q)` | `first`, then `p` after each `q`, a `Parser[(T, U) -> T]`, combined from the left | `T` |
+| `chainr1(p, q, combine, first)` | `x₀ q₁ x₁ … qₙ xₙ`, folded from the right: `combine(x₀, f₁(x₁, … fₙ(xₙ, first)))` | `U` |
+| `commit(p)` | `p`, whose failure fails the parse | `p`'s |
+| `positioned(p)` | `p`, after white space | `(a, Position)` of where it began |
 | `guard(p)` | `p`, reading nothing | `p`'s |
 | `notFollowedBy(p)` | nothing, where `p` fails | `()` |
-| `p` | the parser `p` names, found when it first runs | `p`'s |
-| `success(v)`, `failure(what)` | nothing; `failure` fails expecting `what` | `v` |
+| `phrase(p)` | `p`, then white space, then the end of the text | `p`'s |
+| `log(p, name)` | `p`, printing where it was tried and what it answered | `p`'s |
+| `success(v)` | nothing | `v` |
+| `failure(msg)` | nothing: fails, expecting `msg` | |
+| `err(msg)` | nothing: fails past a commit point, expecting `msg` | |
 
-Every name with a `~` in it binds tightest, then `^^` and `^^^`, then `|`, so a rule reads as
-written: `a ~ b ^^ f | c ~ d` is `((a ~ b) ^^ f) | (c ~ d)`. A rule of several alternatives spans
-lines, each line after the first indented and starting with its `|`.
+Every name with a `~` in it binds tightest, then `^^`, `^^^` and `^?`, then `|` and `|||`, so a
+rule reads as written: `a ~ b ^^ f | c ~ d` is `((a ~ b) ^^ f) | (c ~ d)`. A rule of several
+alternatives spans lines, each line after the first indented and starting with its `|`.
 
 ## Leaf parsers
 
+The character parsers read exactly what they are told to, white space included:
+
 | Parser | Reads | Value |
 | --- | --- | --- |
-| `lit("text")` | exactly `text` | `string` |
-| `lit('c')` | exactly the character `c` | `char` |
-| `satisfy(what, pred)` | one character `pred` accepts | `char` |
-| `takeWhile(pred)` | the characters `pred` accepts, none included | `string` |
-| `takeWhile1(what, pred)` | the same, at least one | `string` |
-| `digits` | ASCII decimal digits, at least one | `string` |
+| `elem(kind, pred)` | one character `pred` accepts, described as `kind` | `char` |
+| `elem(c)`, `accept(c)` | exactly the character `c` | `char` |
+| `acceptIf(pred, err)` | one character `pred` accepts, failing as expecting `err(c)` | `char` |
+| `acceptMatch(expected, f)`, `accept(expected, f)` | one character the `PartialFunction` `f` is defined at | `f(c)` |
+| `acceptSeq(cs)`, `accept(list)` | exactly the characters given, in order | `List[char]` |
+
+The token parsers skip white space first:
+
+| Parser | Reads | Value |
+| --- | --- | --- |
+| `literal("text")` | exactly `text` | `string` |
 | `ident` | a letter or `_`, then letters, digits and `_`; letters in any script | `string` |
-| `whitespace` | white space, none included | `()` |
-| `eof` | nothing, at the end of the text | `()` |
-| `integer` | an optional `-` and decimal digits, fitting a `long` | `long` |
-| `decimal` | a number as JSON writes it: `-`, digits, a fraction, an exponent | `real` |
-| `stringLiteral` | a double-quoted string with JSON's escapes, `\u` pairs included | `string` |
-| `token(p)` | `p`, then white space | `p`'s |
-| `symbol("text")` | `token(lit("text"))` | `string` |
+| `wholeNumber` | an optional `-` and decimal digits | `string` |
+| `decimalNumber` | digits with an optional `.` and digits, or `.` and digits | `string` |
+| `floatingPointNumber` | an optional `-`, a decimal number, an optional exponent | `string` |
+| `stringLiteral` | a double-quoted string with `\"`, `\'`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX` | `string`, as written |
 
-`isDigit`, `isLetter` and `isSpace` are the character tests they use. A parser the library does not
-offer is made by giving the function: `Parser(input -> …)`, using `input.atEnd()`,
-`input.current()`, `input.offset`, and `input.fail(what)`.
+The numbers and strings answer their text, for the grammar to convert to the type it wants.
+`isDigit`, `isLetter` and `isSpace` are the character tests the library uses. A parser the library
+does not offer is made by giving the function: `Parser(input -> …)`, using `input.atEnd()`,
+`input.first()`, `input.offset`, `input.handleWhiteSpace()` and `input.fail(what)`.
 
-## Running and errors
+## Running a grammar, and white space
 
-`p.parse(text)` parses the whole text and answers a `Result[T, ParseError]`; a value that stops
-short of the end is an error expecting `end of input`. `p.parsePrefix(text)` parses as much as `p`
-takes and answers the byte offset it stopped at.
+`parse(p, text)` reads as much of `text` as `p` takes. `parseAll(p, text)` is `parse(phrase(p),
+text)`: it must read all of it, white space at the end included. Both answer a `ParseResult`:
 
-A `ParseError` is the furthest place any alternative reached, every distinct thing expected there
-in the order the grammar tried them, and what was found:
+| Case | Meaning |
+| --- | --- |
+| `Success(result, next)` | the value, and the input where the parser stopped |
+| `Failure(msg, next)` | the message, and the input at the furthest place any alternative reached |
+| `Error(msg, next)` | the same, past a commit point, so no other alternative was tried |
 
-```text
-2:5: expected `,` or `]`, found '4'
+with `r.successful()`, `r.isEmpty()`, `r.get()` (which traps on a failure), `r.getOrElse(v)`,
+`r.map(f)` and `r.next()`, whose `pos()` is the line and column. A result shows as
+`[1:3] parsed: 42`, ``[2:5] failure: expected `,` or `]`, found '4'`` or `[1:2] error: …`.
+
+The message is the furthest place any alternative reached, every distinct thing expected there in
+the order the grammar tried them, and what was found. `withFailureMessage("value")` reports a
+failure that got no further than a rule's first character as expecting `value`. A commit point,
+`p ~! q`, `commit(p)` or `err(msg)`, stops backtracking where the grammar knows which rule it is in,
+so the error names what that rule expected.
+
+White space belongs to the grammar. The module's `parse` and `parseAll` skip white space in any
+script; a grammar that wants otherwise is an object that is a `RegexParsers`, overrides
+`whiteSpace()` or `skipWhitespace()`, and is run with its own `parse` and `parseAll`:
+
+```avin
+object Config: RegexParsers
+    // Comments run from `#` to the end of the line, and count as white space.
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", isSpace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+
+    lazy val entry: Parser[(string, string)] = ident ~ (literal("=") ~> ident)
+
+main()
+    print(Config.parseAll(rep(Config.entry), "a = b  # one\nc = d"))
 ```
 
-`p.label("value")` reports a failure that got no further than `p`'s first character as expecting
-`value`. A commit point, `p ~! q` or `commit(p)`, stops backtracking where the grammar knows which
-rule it is in, so the error names what that rule expected.
+An `override skipWhitespace() -> bool = false` makes a grammar read every character itself.
 
 ## Recursive grammars
 
@@ -153,6 +197,38 @@ when the method is called, so a rule may not begin with itself, which would loop
 Each level of nesting is a few calls deep, so the depth a text can nest is bounded by the stack of
 the thread parsing it: a few thousand levels of parentheses on the main thread, more on a thread
 spawned with a larger stack.
+
+## Changes in 0.4.0
+
+The library's names now follow the standard vocabulary of parser combinators. A grammar written for
+0.3.0 changes as follows.
+
+| 0.3.0 | 0.4.0 |
+| --- | --- |
+| `p.parse(text)` → `Result[T, ParseError]` | `parseAll(p, text)` → `ParseResult[T]` |
+| `p.parsePrefix(text)` → `Result[(T, int), ParseError]` | `parse(p, text)`, whose `next().offset` is where it stopped |
+| `ParseError(position, expected, found)` | `Failure(msg, next)` and `Error(msg, next)`, `next.pos()` the position |
+| `chainLeft(p, op)` | `chainl1(p, op)` |
+| `chainRight(p, op)` | `chainr1(p, op, combine, first)`, folding into `first` |
+| `repSep`, `rep1Sep` | `repsep`, `rep1sep` |
+| `p.label(what)` | `p.withFailureMessage(what)` |
+| `p.filter(what, pred)` | `p.filter(pred).withFailureMessage(what)` |
+| `p.opt()`, `p.commit()`, `p.positioned()` | `opt(p)`, `commit(p)`, `positioned(p)` only |
+| `lit("text")` | `literal("text")`, which skips white space first |
+| `lit('c')` | `elem('c')` or `accept('c')` |
+| `satisfy(what, pred)` | `elem(what, pred)` |
+| `takeWhile(pred)`, `takeWhile1(what, pred)`, `digits` | `rep(elem(what, pred))`, `rep1(elem(what, pred))` |
+| `integer`, `decimal` | `wholeNumber`, `floatingPointNumber`, answering the text |
+| `stringLiteral`, answering the decoded text | `stringLiteral`, answering the text as written |
+| `token(p)`, `symbol("text")`, `whitespace` | white space skipped by the token parsers, set by a `RegexParsers` |
+| `eof` | `phrase(p)` |
+| `input.text`, `input.current()` | `input.source`, `input.first()` |
+
+New: `p ||| q`, `p ^? f`, `p into f`, `p.withFilter(f)`, `p.named(n)`, `p.withErrorMessage(msg)`,
+`rep1(first, p)`, `repN(n, p)`, `chainl1(first, p, q)`, `phrase(p)`, `log(p, name)`, `err(msg)`,
+`elem`, `accept`, `acceptIf`, `acceptMatch`, `acceptSeq`, `decimalNumber`,
+`RegexParsers` with `whiteSpace()` and `skipWhitespace()`, and `ParseResult` with `Success`,
+`Failure` and `Error`.
 
 ## Tests
 

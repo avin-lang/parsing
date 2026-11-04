@@ -1,0 +1,54 @@
+module tests
+
+// White space belongs to the grammar: a `RegexParsers` says what it is and whether it is skipped,
+// and its `parse` and `parseAll` skip it before every token, at the end, and before a positioned
+// value. Nothing the white space parser expects is reported, and a commit inside it commits nothing.
+import dev.avinlang.parsing.{Parser, RegexParsers, elem, ident, isSpace, literal, log, positioned, rep, wholeNumber}
+
+// Comments run from `#` to the end of the line, and count as white space.
+object Commented: RegexParsers
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", isSpace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+
+    lazy val entry: Parser[string] = ident ~ (literal("=") ~> ident) ^^ (match (k, v) -> s"$k=$v")
+
+// Every character is the grammar's own.
+object Exact: RegexParsers
+    override skipWhitespace() -> bool = false
+
+// White space is only the space character.
+object Spaced: RegexParsers
+    override whiteSpace() -> Parser[unit] = rep(elem(' ')) ^^^ ()
+
+// White space whose parser commits and fails: `~~` must be followed by `!`.
+object Strict: RegexParsers
+    override whiteSpace() -> Parser[unit] = rep(literal(" ") | literal("~~") ~! literal("!") ^^^ " ") ^^^ ()
+
+@test("a grammar's white space may hold comments, and is skipped at the end too")
+comments()
+    assertEq(shown(Commented.parseAll(rep(Commented.entry), "a = b  # one\n# two\nc = d # three")), "[a=b, c=d]")
+    assertEq(shown(Commented.parseAll(rep(Commented.entry), "a = # x\n b")), "[a=b]")
+    assertEq(shown(Commented.parseAll(rep(Commented.entry), "a = # x\n 7")), "failure 2:2: expected identifier, found '7'")
+
+@test("a grammar that skips no white space reads every character itself")
+exact()
+    assertEq(shown(Exact.parseAll(literal("a") ~ literal("b"), "ab")), "(a, b)")
+    assertEq(shown(Exact.parseAll(literal("a") ~ literal("b"), "a b")), "failure 1:2: expected `b`, found ' '")
+    assertEq(shown(Exact.parseAll(wholeNumber, "1 ")), "failure 1:2: expected end of input, found ' '")
+    assertEq(shown(Exact.parse(ident, " x")), "failure 1:1: expected identifier, found ' '")
+
+@test("white space is whatever the grammar says, and positions come after it")
+spaced()
+    assertEq(shown(Spaced.parseAll(literal("a") ~ literal("b"), "a  b")), "(a, b)")
+    assertEq(shown(Spaced.parseAll(literal("a") ~ literal("b"), "a\nb")), "failure 1:2: expected `b`, found '\\n'")
+    assertEq(shown(Spaced.parseAll(rep(positioned(ident)) ^^ (xs -> xs.map(match (n, at) -> s"$n@$at").mkString(" ")), "a  bb c")), "a@1:1 bb@1:4 c@1:7")
+
+@test("a commit or a failure inside the white space parser commits and reports nothing")
+quietWhiteSpace()
+    assertEq(shown(Strict.parseAll(literal("a") ~ literal("b"), "a ~~! b")), "(a, b)")
+    assertEq(shown(Strict.parseAll(literal("a") ~ literal("b") | literal("a") ~ literal("~~c"), "a~~c")), "(a, ~~c)")
+    assertEq(shown(Strict.parseAll(literal("a") ~ literal("b"), "a x")), "failure 1:3: expected `b`, found 'x'")
+
+@test("log passes the value through")
+logged()
+    assertEq(all(log(literal("a"), "a") ~ log(literal("b"), "b"), "a b"), "(a, b)")
+    assertEq(all(log(literal("a"), "a"), "b"), "failure 1:1: expected `a`, found 'b'")

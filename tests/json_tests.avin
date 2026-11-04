@@ -1,64 +1,49 @@
 module tests
 
-// JSON parsed into a data type and printed back: objects, arrays, strings with every escape,
-// numbers, `true`, `false` and `null`, nested and empty, with white space anywhere a token may be
-// followed by it. Printing a parsed document and parsing the print gives the same value, and a
-// document of more than a megabyte parses well inside the time a test is given.
-import dev.avinlang.parsing.{Parser, decimal, repSep, stringLiteral, symbol, token, whitespace}
+// JSON parsed into a data type and printed back: objects, arrays, strings with escapes, numbers,
+// `true`, `false` and `null`, nested and empty, with white space before any token. Printing a parsed
+// document and parsing the print gives the same value, and a document of more than a megabyte parses
+// well inside the time a test is given. A string is kept as written, escapes and all.
+import dev.avinlang.parsing.{Parser, Success, floatingPointNumber, literal, parseAll, repsep, stringLiteral}
 
 data Json
     JNull
     JBool(value: bool)
     JNumber(value: real)
-    JString(value: string)
+    JString(written: string)
     JArray(items: Vector[Json])
     JObject(fields: Vector[(string, Json)])
 
-lazy val value: Parser[Json] = symbol("null") ^^^ JNull
-    | symbol("true") ^^^ JBool(true)
-    | symbol("false") ^^^ JBool(false)
-    | token(decimal) ^^ (x -> JNumber(x))
-    | token(stringLiteral) ^^ (s -> JString(s))
+lazy val value: Parser[Json] = literal("null") ^^^ JNull
+    | literal("true") ^^^ JBool(true)
+    | literal("false") ^^^ JBool(false)
+    | floatingPointNumber ^^ (x -> JNumber(x.toReal().getOrElse(0.0)))
+    | stringLiteral ^^ (s -> JString(s))
     | array
     | obj
 
-lazy val array: Parser[Json] = symbol("[") ~> repSep(value, symbol(",")) <~ symbol("]") ^^ (items -> JArray(items))
+lazy val array: Parser[Json] = literal("[") ~> repsep(value, literal(",")) <~ literal("]") ^^ (items -> JArray(items))
 
-lazy val field: Parser[(string, Json)] = token(stringLiteral) <~ symbol(":") ~ value
+lazy val field: Parser[(string, Json)] = stringLiteral <~ literal(":") ~ value
 
-lazy val obj: Parser[Json] = symbol("{") ~> repSep(field, symbol(",")) <~ symbol("}") ^^ (fields -> JObject(fields))
-
-lazy val document: Parser[Json] = whitespace ~> value
-
-quote(s: string) -> string
-    val out = StringWriter()
-    out.write("\"")
-    for c in s.chars()
-        c match
-            '"' -> out.write("\\\"")
-            '\\' -> out.write("\\\\")
-            '\n' -> out.write("\\n")
-            '\t' -> out.write("\\t")
-            _ -> if int(c) < 0x20 then out.write(s"\\u00${if int(c) < 16 then "0" else "1"}${"0123456789abcdef".slice(int(c) % 16, int(c) % 16 + 1)}") else out.writeChar(c)
-    out.write("\"")
-    out.text()
+lazy val obj: Parser[Json] = literal("{") ~> repsep(field, literal(",")) <~ literal("}") ^^ (fields -> JObject(fields))
 
 printed(j: Json) -> string = j match
     JNull -> "null"
     JBool(b) -> s"$b"
     JNumber(x) -> s"$x"
-    JString(s) -> quote(s)
+    JString(s) -> s
     JArray(items) -> items.map(printed).mkString("[", ",", "]")
-    JObject(fields) -> fields.map(match (k, v) -> quote(k) + ":" + printed(v)).mkString("{", ",", "}")
+    JObject(fields) -> fields.map(match (k, v) -> k + ":" + printed(v)).mkString("{", ",", "}")
 
 // `text` parsed and printed, checking that the print parses to the same value.
 roundTrip(text: string) -> string
-    document.parse(text) match
-        Ok(j) ->
+    parseAll(value, text) match
+        Success(j, _) ->
             val out = printed(j)
-            assert(document.parse(out) == Ok(j), s"$out parses to a different value")
+            assert(parseAll(value, out).getOrElse(JNull) == j, s"$out parses to a different value")
             out
-        Err(e) -> s"error $e"
+        r -> shown(r)
 
 @test("literals and empty collections")
 jsonLiterals()
@@ -80,18 +65,19 @@ jsonNumbers()
     assertEq(roundTrip("1E3"), "1000")
     assertEq(roundTrip("2.5e-3"), "0.0025")
 
-@test("strings with every escape")
+@test("strings kept as written")
 escapedStrings()
     assertEq(roundTrip("\"\""), "\"\"")
     assertEq(roundTrip("\"plain\""), "\"plain\"")
-    assertEq(roundTrip("\"q\\\" b\\\\ s\\/ n\\n t\\t r\\r b\\b f\\f\""), "\"q\\\" b\\\\ s/ n\\n t\\t r\\u000d b\\u0008 f\\u000c\"")
-    assertEq(roundTrip("\"\\u0041\\u00e9\\u4e2d\\ud83d\\ude00\""), "\"Aé中😀\"")
-    assertEq(roundTrip("\"café \u{1F600}\""), "\"café 😀\"")
+    assertEq(roundTrip("\"q\\\" b\\\\ n\\n t\\t\""), "\"q\\\" b\\\\ n\\n t\\t\"")
+    assertEq(roundTrip("\"\\ud83d\\ude00\""), "\"\\ud83d\\ude00\"")
+    assertEq(roundTrip("\"café \u{1F600}\""), "\"café \u{1F600}\"")
 
 @test("objects and arrays nested, with white space between tokens")
 jsonNested()
     assertEq(roundTrip("{\"name\": \"avin\", \"tags\": [\"fast\", \"small\"], \"version\": 1, \"stable\": false, \"next\": null}"), "{\"name\":\"avin\",\"tags\":[\"fast\",\"small\"],\"version\":1,\"stable\":false,\"next\":null}")
     assertEq(roundTrip("\n{\n  \"a\" : {\n    \"b\" : [ 1 , 2 , { \"c\" : [ ] } ]\n  }\n}\n"), "{\"a\":{\"b\":[1,2,{\"c\":[]}]}}")
+    assertEq(roundTrip("{\"a\": [1, 2,]}"), "failure 1:13: expected `null`, `true`, `false`, floating-point number, string, `[` or `{`, found ']'")
 
 @test("a document of more than a megabyte")
 jsonLarge()
@@ -103,8 +89,8 @@ jsonLarge()
     out.write("\n]\n")
     val text = out.text()
     assert(text.byteLength() > 1000000)
-    document.parse(text) match
-        Ok(JArray(items)) ->
+    parseAll(value, text) match
+        Success(JArray(items), _) ->
             var ids = 0.0
             var prices = 0.0
             var names = 0
@@ -113,11 +99,10 @@ jsonLarge()
                     JObject(fields) ->
                         for (k, v) in fields
                             (k, v) match
-                                ("id", JNumber(n)) -> ids += n
-                                ("price", JNumber(p)) -> prices += p
-                                ("name", JString(s)) -> if s.startsWith("item \"number\" ") then names += 1
+                                ("\"id\"", JNumber(n)) -> ids += n
+                                ("\"price\"", JNumber(p)) -> prices += p
+                                ("\"name\"", JString(s)) -> if s.startsWith("\"item \\\"number\\\" ") then names += 1
                                 _ -> ()
                     _ -> ()
             assertEq(s"${items.length()} $ids $prices $names", "10000 49995000 49997500 10000")
-        Ok(_) -> assert(false, "not an array")
-        Err(e) -> assert(false, s"$e")
+        r -> assert(false, shown(r.map(printed)))
