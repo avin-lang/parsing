@@ -4,8 +4,28 @@ module tests
 // optional parts, separators, chains of one and chains into another type, look ahead, positions, a
 // parser chosen by a value, a value filtered and mapped at once, the longest of two matches, and
 // prefixes.
-import dev.avinlang.parsing.{Parser, Position, accept, chainl1, chainr1, elem, failure, guard, ident, literal, not, opt, parse, parseAll, positioned, rep, rep1, rep1sep, repN, repsep, success, wholeNumber}
+import dev.avinlang.parsing.{Parser, Position, Positional, accept, chainl1, chainr1, elem, failure, guard, ident, literal, not, opt, parse, parseAll, positioned, rep, rep1, rep1sep, repN, repsep, success, wholeNumber}
 
+// A node class that conforms to Positional, and describes itself with the position it was given.
+open class Located(val kind: string): Positional
+    describe() -> string = pos match
+        Some(p) -> s"$kind@$p"
+        None -> s"$kind@?"
+
+// A subclass, which stores the position once, in its superclass.
+class Call(val name: string, val arity: int): Located("call")
+
+// An object conforming to Positional through its superclass.
+object End: Located("end")
+
+// A trait of its own beside Positional, each with a field.
+trait Tagged
+    var count: int = 1
+    tag() -> string = s"$count@${where()}"
+    where() -> string
+
+class Word(val text: string): Positional, Tagged
+    override where() -> string = pos.map(p -> s"$p").getOrElse("?")
 
 lazy val numbers: Parser[List[long]] = repsep(number, literal(","))
 
@@ -96,7 +116,7 @@ lookAhead()
 positions()
     val located = rep(positioned(ident ^^ (n -> Node(n)))) ^^ (xs -> xs.map(n -> n.where()).mkString(" "))
     assertEq(all(located, "alpha\n  béta g\n\ndelta"), "alpha@1:1 béta@2:3 g@2:8 delta@4:1")
-    val offset = literal("x") ~> positioned(literal("y") ^^ (v -> Node(v))) ^^ (n -> n.pos().map(at -> at.offset).getOrElse(-1))
+    val offset = literal("x") ~> positioned(literal("y") ^^ (v -> Node(v))) ^^ (n -> n.pos.map(at -> at.offset).getOrElse(-1))
     assertEq(all(offset, "x  y"), "3")
 
 @test("positioned keeps a position the value already has, and sets one only where there is none")
@@ -105,8 +125,35 @@ positionedOnce()
     first.setPos(Position(7, 3, 4))
     assertEq(all(positioned(literal("a") ^^ (_ -> first)) ^^ (n -> n.where()), "  a"), "a@3:4")
     assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.where()), "  a"), "a@1:3")
-    assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.pos().isDefined()), "a"), "true")
-    assertEq(Node("n").pos().isEmpty(), true)
+    assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.pos.isDefined()), "a"), "true")
+    assertEq(Node("n").pos.isEmpty(), true)
+    val inner = positioned(literal("b") ^^ (v -> Node(v)))
+    assertEq(all(positioned(literal("a") ~> inner) ^^ (n -> n.where()), "a  b"), "b@1:4")
+
+@test("a Positional class stores its position in the trait's field, which setPos sets once and assignment replaces")
+positionalField()
+    val n = Node("n")
+    n.setPos(Position(0, 1, 1))
+    n.setPos(Position(5, 2, 3))
+    assertEq(n.where(), "n@1:1")
+    n.pos = Some(Position(5, 2, 3))
+    assertEq(n.where(), "n@2:3")
+    val p: Positional = n
+    p.pos = None
+    assertEq(n.where(), "n@?")
+    p.setPos(Position(9, 4, 2))
+    assertEq(n.where(), "n@4:2")
+    assertEq(p.pos.map(at -> at.offset).getOrElse(-1), 9)
+    assertEq(Node("m").pos.isEmpty(), true)
+
+@test("subclasses, objects and classes with other traits mix in Positional, and positioned sets each")
+positionalShapes()
+    val call = positioned(ident ^^ (f -> Call(f, 2))) ^^ (c -> s"${c.arity} ${c.describe()}")
+    assertEq(all(call, "\n  f"), "2 call@2:3")
+    val keyword = positioned(literal("end") ^^ (_ -> End)) ^^ (e -> e.describe())
+    assertEq(all(keyword, " end"), "end@1:2")
+    val counted = rep(positioned(ident ^^ (w -> Word(w)))) ^^ (ws -> ws.map(w -> s"${w.text}${w.tag()}").mkString(" "))
+    assertEq(all(counted, "a b"), "a1@1:1 b1@1:3")
 
 @test(">> is flatMap, and rep, rep1, repN, repsep and rep1sep answer a List")
 shiftAndLists()

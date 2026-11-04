@@ -20,7 +20,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.5.0" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.5.1" }
 }
 ```
 
@@ -197,6 +197,23 @@ when the method is called, so a rule may not begin with itself, which would loop
 Each level of nesting is a few calls deep, so the depth a text can nest is bounded by the stack of
 the thread parsing it: a few thousand levels of parentheses on the main thread, more on a thread
 spawned with a larger stack.
+
+## Changes in 0.5.1
+
+`Positional` holds the position itself, in a field, so a node class conforms to it and writes
+nothing else:
+
+```avin
+class Name(val text: string): Positional
+```
+
+| 0.5.0 | 0.5.1 |
+| --- | --- |
+| each class kept a `var` and overrode `pos()` and `setPos(p)` | the trait's field `var pos: Option[Position]`, read as `n.pos` and assignable |
+| `setPos(p)` set the position as each class wrote it | the trait's `setPos(p)` sets it only while there is none |
+
+A trait holding a field is conformed to by a class or an object, so a positioned node type is a
+class.
 
 ## Changes in 0.5.0
 

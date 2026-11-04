@@ -416,29 +416,36 @@ answers an `Error` naming what `p` expected.
 ## Positions
 
 A syntax tree that reports errors of its own later, a type checker's "not defined" at the name's
-line and column, keeps where each node began. A node type says so by conforming to `Positional`: it
-has a position that starts unset and that the parser sets. A trait holds no state, so the type keeps
-the position in a `var` of its own and the two methods read and write it:
+line and column, keeps where each node began. A node type says so by conforming to `Positional`,
+and that is all it writes: the trait holds the position itself, a field every conforming class
+stores, which starts unset and which the parser sets:
 
 ```avin
 class Name(val text: string): Positional
-    private var at: Option[Position] = None
-    override pos() -> Option[Position] = at
-    override setPos(p: Position) = at = Some(p)
+
+val n = Name("x")
+n.pos                       // None until a parser, or the program, sets it
+n.setPos(Position(0, 1, 1))
+n.pos                       // Some(1:1)
 ```
+
+A trait holding a field is conformed to by a class or an object, so a node type that wants a
+position is a class rather than a `data` type.
+
+`setPos` sets the position only while there is none. A value that already has one, such as a node
+a rule built by reusing another, keeps it, so the position is that of the first rule to place the
+value. Assigning `pos` directly replaces it, for a program that means to.
 
     // A value that remembers where in the text it began.
     trait Positional
         // Where the value began, or `None` while no position has been set.
-        pos() -> Option[Position]
+        var pos: Option[Position] = None
 
-        // Records where the value began.
-        setPos(at: Position)
+        // Records where the value began, unless it already has a position.
+        setPos(at: Position) = if pos.isEmpty() then pos = Some(at)
 
 `positioned(p)` is `p` with its value's position set to where `p` began. It skips the grammar's
-white space first, so the position is the value's own and not that of the space before it. A
-position is set once: a value that already has one, such as a node a rule built by reusing another,
-keeps it.
+white space first, so the position is the value's own and not that of the space before it.
 
     // The value of `p`, positioned where `p` starts after any white space, unless it already has a
     // position.
@@ -449,7 +456,7 @@ keeps it.
             val start = input.offset
             q.run(input) match
                 Some(a) ->
-                    if a.pos().isEmpty() then a.setPos(input.position(start))
+                    if a.pos.isEmpty() then a.setPos(input.position(start))
                     Some(a)
                 None -> None)
 
