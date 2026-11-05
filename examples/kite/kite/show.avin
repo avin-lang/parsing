@@ -21,10 +21,11 @@ quoted(text: string) -> string
     out.write("\"")
     out.text()
 
-// A float as written, always with a point or an exponent so that it never reads as an integer.
+// A float as written, always with a point or an exponent so that it never reads as an integer;
+// the infinities and NaN as `inf`, `-inf` and `NaN`.
 floatText(x: real) -> string
     val t = s"$x"
-    if t.contains(".") || t.contains("e") || t.contains("E") || t.contains("n") then t else t + ".0"
+    if t.contains(".") || t.contains("e") || t.contains("E") || t.contains("n") || t.contains("N") then t else t + ".0"
 
 showType(t: TypeRef) -> string = t match
     NamedType(n, _) -> n
@@ -108,7 +109,7 @@ showModule(m: Module) -> string
     val out = StringWriter()
     out.write(s"(module ${m.name})")
     for i in m.imports
-        out.write(s"\n(import $i)")
+        out.write(s"\n(import ${i.name})")
     for item in m.items
         out.write("\n" + showItem(item))
     out.text()

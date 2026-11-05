@@ -1,0 +1,95 @@
+module tests
+
+// The checker's rules for `match`: each pattern against the type of the value matched, the names
+// patterns bind, arms of one type, every value covered, and no arm that can never match.
+
+val shapes = "type Point = { x: f64, y: f64 }\ntype S = | Circle(c: Point, r: f64) | Rect(w: f64, h: f64) | Empty\n"
+
+// The checker's mistakes in a function `f(s: S, n: i64, b: bool, t: string, x: f64, p: Point)`
+// whose body is `text`, on line 6.
+inF(text: string) -> string = decls(shapes + "fn f(s: S, n: i64, b: bool, t: string, x: f64, p: Point) -> i64 {\n" + text + "\n}")
+
+@test("each kind of pattern matches values of its type")
+patternTypes()
+    assertEq(inF("match n { 0 => 1, -1 => 2, _ => 3 }"), "ok")
+    assertEq(inF("match x { 0.5 => 1, -1.5 => 2, 1e3 => 4, _ => 3 }"), "ok")
+    assertEq(inF("match t { \"a\" => 1, \"\" => 2, _ => 3 }"), "ok")
+    assertEq(inF("match b { true => 1, false => 2 }"), "ok")
+    assertEq(inF("match s { Circle(_, r) => 1, Rect(w, h) => 2, Empty => 3 }"), "ok")
+    assertEq(inF("match p { Point(px, py) => 1 }"), "ok")
+    assertEq(inF("match s { Circle(Point(cx, _), r) => 1, _ => 2 }"), "ok")
+    assertEq(inF("match n { 0 => 1, \"a\" => 2, _ => 3 }"), "6:19: the value matched is `i64`, not `string`")
+    assertEq(inF("match t { 1 => 1, _ => 3 }"), "6:11: the value matched is `string`, not `i64`")
+    assertEq(inF("match n { 1.0 => 1, _ => 3 }"), "6:11: the value matched is `i64`, not `f64`")
+    assertEq(inF("match n { true => 1, _ => 3 }"), "6:11: the value matched is `i64`, not `bool`")
+    assertEq(inF("match n { Empty => 1, _ => 3 }"), "6:11: the value matched is `i64`, not `S`")
+    assertEq(inF("match s { Point(u, v) => 1, _ => 3 }"), "6:11: the value matched is `S`, not `Point`")
+    assertEq(inF("match s { Nope(a) => 1, _ => 3 }"), "6:11: unknown variant `Nope`")
+    assertEq(inF("match s { Rect(w) => 1, _ => 3 }"), "6:11: `Rect` has 2 fields; the pattern gives 1")
+    assertEq(inF("match s { Circle => 1, _ => 3 }"), "6:11: `Circle` has 2 fields; the pattern gives 0")
+    assertEq(inF("match s { Empty(1) => 1, _ => 3 }"), "6:11: `Empty` has 0 fields; the pattern gives 1")
+    assertEq(inF("match s { Circle(Point(1, _), _) => 1, _ => 3 }"), "6:24: the value matched is `f64`, not `i64`")
+    // A variant without fields may be written with empty parentheses.
+    assertEq(inF("match s { Empty() => 1, _ => 2 }"), "ok")
+
+@test("a pattern's names are bound in its arm, with the types of what they match")
+patternBindings()
+    assertEq(inF("match s { Circle(c, r) => { let a: Point = c\nlet q: f64 = r\n1 }, _ => 2 }"), "ok")
+    assertEq(inF("match n { k => k + 1 }"), "ok")
+    assertEq(inF("match s { Rect(w, h) => w, _ => 2 }"), "6:25: expected `i64`, found `f64`")
+    assertEq(inF("match s { Rect(w, h) => 1, _ => w }"), "6:33: unknown name `w`")
+    assertEq(inF("match s { Rect(w, _) => 1, _ => 2 }\nlet z = w\n1"), "7:9: unknown name `w`")
+    // A lone name is a variant where one of that name is declared, and a binding otherwise.
+    assertEq(inF("match s { Empty => 1, other => 2 }"), "ok")
+    // Even inside an unknown variant, a name is bound, so it is not reported again.
+    assertEq(inF("match s { Nope(a) => a, _ => 3 }"), "6:11: unknown variant `Nope`")
+
+@test("a match's arms have one type where its value is used")
+armTypes()
+    assertEq(inF("let a: string = match n { 0 => \"zero\", _ => \"many\" }\n1"), "ok")
+    assertEq(inF("let a = match n { 0 => \"zero\", _ => 1 }\n1"), "6:37: the arms of `match` have different types, `string` and `i64`")
+    assertEq(inF("let a: string = match n { 0 => \"zero\", _ => 1 }\n1"), "6:45: expected `string`, found `i64`")
+    // An arm that never finishes fits any type.
+    assertEq(inF("let a = match n { 0 => { return 0 }, _ => 1 }\na"), "ok")
+    // As a statement, a match's arms may have any types.
+    assertEq(inF("match n { 0 => \"zero\", _ => 1 }\n1"), "ok")
+    assertEq(inF("let a = match n { }\n1"), "6:9: this `match` does not cover every `i64` value, such as `_`")
+
+@test("a match covers every value, naming one it leaves out")
+exhaustiveness()
+    assertEq(inF("match s { Circle(_, _) => 1, Rect(_, _) => 2 }"), "6:1: this `match` does not cover every `S` value, such as `Empty`")
+    assertEq(inF("match s { Empty => 1 }"), "6:1: this `match` does not cover every `S` value, such as `Circle(_, _)`")
+    assertEq(inF("match s { }"), "6:1: this `match` does not cover every `S` value, such as `_`")
+    assertEq(inF("match b { true => 1 }"), "6:1: this `match` does not cover every `bool` value, such as `false`")
+    assertEq(inF("match b { false => 1 }"), "6:1: this `match` does not cover every `bool` value, such as `true`")
+    assertEq(inF("match n { 0 => 1, 1 => 2 }"), "6:1: this `match` does not cover every `i64` value, such as `_`")
+    assertEq(inF("match t { \"a\" => 1 }"), "6:1: this `match` does not cover every `string` value, such as `_`")
+    assertEq(inF("match x { 1.0 => 1 }"), "6:1: this `match` does not cover every `f64` value, such as `_`")
+    // Nested patterns: what a field's pattern leaves out is named inside the variant.
+    assertEq(decls("type B = | T | F\ntype P = | Two(a: B, b: B)\nfn f(p: P) -> i64 { match p { Two(T, _) => 1, Two(F, T) => 2 } }"), "5:21: this `match` does not cover every `P` value, such as `Two(F, F)`")
+    assertEq(decls("type O = | No | Yes(v: bool)\nfn f(o: O) -> i64 { match o { No => 0, Yes(true) => 1 } }"), "4:21: this `match` does not cover every `O` value, such as `Yes(false)`")
+    assertEq(inF("match p { Point(1.0, _) => 1 }"), "6:1: this `match` does not cover every `Point` value, such as `Point(_, _)`")
+    assertEq(inF("match s { Circle(Point(_, _), _) => 1, Rect(_, _) => 2, Empty => 3 }"), "ok")
+    // A binding, like `_`, covers everything.
+    assertEq(inF("match s { Circle(_, _) => 1, rest => 2 }"), "ok")
+    assertEq(inF("match b { true => 1, false => 2 }"), "ok")
+    // A sum type of one variant, and a record, are covered by one arm.
+    assertEq(decls("type One = | Only(v: i64)\nfn f(o: One) -> i64 { match o { Only(v) => v } }"), "ok")
+
+@test("an arm that no value can reach is an error")
+redundancy()
+    assertEq(inF("match n { _ => 1, 0 => 2 }"), "6:19: this arm can never match")
+    assertEq(inF("match n { 0 => 1, 0 => 2, _ => 3 }"), "6:19: this arm can never match")
+    assertEq(inF("match n { k => 1, _ => 2 }"), "6:19: this arm can never match")
+    assertEq(inF("match b { true => 1, false => 2, _ => 3 }"), "6:34: this arm can never match")
+    assertEq(inF("match s { Circle(_, _) => 1, Circle(_, 2.0) => 2, _ => 3 }"), "6:30: this arm can never match")
+    assertEq(inF("match s { Circle(_, _) => 1, Rect(_, _) => 2, Empty => 3, _ => 4 }"), "6:59: this arm can never match")
+    assertEq(inF("match t { \"a\" => 1, \"a\" => 2, _ => 3 }"), "6:21: this arm can never match")
+    // A float pattern of zero matches both zeros.
+    assertEq(inF("match x { 0.0 => 1, -0.0 => 2, _ => 3 }"), "6:21: this arm can never match")
+    // Several unreachable arms are each reported, and a gap as well.
+    assertEq(inF("match b { true => 1, true => 2, true => 3 }"), "6:1: this `match` does not cover every `bool` value, such as `false`\n6:22: this arm can never match\n6:33: this arm can never match")
+    // A lone name that is no variant binds, so the arms after it can never match.
+    assertEq(inF("match s { Nope => 1, Circle(_, _) => 2 }"), "6:22: this arm can never match")
+    // A mistake in a pattern leaves coverage unjudged.
+    assertEq(inF("match s { Nope(_) => 1, Circle(_, _) => 2 }"), "6:11: unknown variant `Nope`")

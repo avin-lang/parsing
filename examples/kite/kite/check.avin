@@ -1,0 +1,802 @@
+module kite
+
+// Kite's checker: it resolves every name, gives every expression a type, and reports each mistake
+// it finds with its position, going on after one to find the rest. What it resolves, the records,
+// sums and functions of the module, is the `Program` the evaluator runs.
+import dev.avinlang.parsing.Position
+
+// The modules a program may import, and the functions in them.
+builtinModule(name: string) -> bool = name == "io" || name == "math"
+
+builtinFunction(md: string, name: string) -> Option[(Vector[Slot], Ty)] = (md, name) match
+    ("io", "print") -> Some((Vector(Slot("text", StrT)), UnitT))
+    ("io", "println") -> Some((Vector(Slot("text", StrT)), UnitT))
+    ("math", "abs") -> Some((Vector(Slot("x", FloatT)), FloatT))
+    ("math", "sqrt") -> Some((Vector(Slot("x", FloatT)), FloatT))
+    _ -> None
+
+builtinType(name: string) -> Option[Ty] = name match
+    "i64" -> Some(IntT)
+    "f64" -> Some(FloatT)
+    "bool" -> Some(BoolT)
+    "string" -> Some(StrT)
+    _ -> None
+
+// The most items an array may have: 2^24.
+val maxArrayLength: long = 16777216
+
+// `n` things: `1 field`, `2 fields`.
+count(n: int, thing: string) -> string = if n == 1 then s"1 $thing" else s"$n ${thing}s"
+
+// Where an expression begins: a binary operation, a call, an index or a field at its left operand.
+startOf(e: Expr) -> Position = e match
+    Binary(_, l, _, _) -> startOf(l)
+    RangeExpr(l, _, _, _) -> startOf(l)
+    Call(f, _, _) -> startOf(f)
+    Index(t, _, _) -> startOf(t)
+    Field(t, _, _) -> startOf(t)
+    IntLit(_, at) -> at
+    FloatLit(_, at) -> at
+    BoolLit(_, at) -> at
+    StrLit(_, at) -> at
+    Name(_, at) -> at
+    ArrayLit(_, at) -> at
+    ArrayRepeat(_, _, at) -> at
+    Unary(_, _, at) -> at
+    BlockExpr(_, at) -> at
+    If(_, _, _, at) -> at
+    Match(_, _, at) -> at
+
+patternAt(p: Pattern) -> Position = p match
+    WildPat(at) -> at
+    IntPat(_, at) -> at
+    FloatPat(_, at) -> at
+    StrPat(_, at) -> at
+    BoolPat(_, at) -> at
+    NamePat(_, at) -> at
+    VariantPat(_, _, at) -> at
+
+// Whether a value of type `t` may stand where `want` is expected: the same type, or one that never
+// finishes, or an empty array where an array of that length is wanted.
+fits(t: Ty, want: Ty) -> bool
+    if t == want then return true
+    (t, want) match
+        (NeverT, _) -> true
+        (ErrorT, _) -> true
+        (_, ErrorT) -> true
+        (ArrayT(a, n), ArrayT(b, k)) -> n == k && fits(a, b)
+        _ -> false
+
+// The type both of two branches fit, if there is one.
+join(a: Ty, b: Ty) -> Option[Ty] = if fits(a, b) then Some(b) elif fits(b, a) then Some(a) else None
+
+// What a name declared at the top of a module is, in the namespace of values.
+data Entity
+    FnEntity(function: Function)
+    RecordEntity(name: string, at: Position)
+    VariantEntity(variant: VariantSig, at: Position)
+    ModuleEntity(name: string, at: Position)
+
+entityAt(e: Entity) -> Position = e match
+    FnEntity(f) -> f.at
+    RecordEntity(_, at) -> at
+    VariantEntity(_, at) -> at
+    ModuleEntity(_, at) -> at
+
+// A `type` declaration, in the namespace of types.
+data TypeEntry(definition: TypeDef, at: Position)
+
+// A local name: a parameter, a `let` or `var`, a loop's variable or a pattern's binding.
+data Local(name: string, ty: Ty, kind: string, at: Position)
+
+// A pattern as exhaustiveness sees it: anything, or a constructor with patterns for its parts. A
+// literal is a constructor with no parts, its key the literal's text.
+data Pat
+    Wild
+    Ctor(key: string, args: Vector[Pat])
+
+data CtorInfo(key: string, parts: Vector[Ty])
+
+showPat(p: Pat) -> string = p match
+    Wild -> "_"
+    Ctor(k, args) -> if args.isEmpty() then k else s"$k(${args.map(showPat).mkString(", ")})"
+
+wilds(n: int) -> Vector[Pat]
+    val b = Buffer[Pat]()
+    for _ in 0..<n
+        b.append(Wild)
+    b.toVector()
+
+// Checks a module, answering what it declares and the mistakes found, in the order of the text.
+checkModule(m: Module) -> (Program, Vector[Diagnostic])
+    val c = Checker(m)
+    c.run()
+
+class Checker(m: Module)
+    private val errors = Buffer[Diagnostic]()
+    private var typeDecls = Map.empty[string, TypeEntry]()
+    private var aliases = Map.empty[string, Ty]()
+    private var resolving: List[string] = Nil
+    private var records = Map.empty[string, Vector[Slot]]()
+    private var sums = Map.empty[string, Vector[VariantSig]]()
+    private var variants = Map.empty[string, VariantSig]()
+    private var values = Map.empty[string, Entity]()
+    private var functions = Map.empty[string, Function]()
+    private val order = Buffer[Function]()
+    private var locals: List[Local] = Nil
+    private var loops = 0
+    private var fnName = ""
+    private var fnResult: Ty = UnitT
+
+    run() -> (Program, Vector[Diagnostic])
+        declareTypes()
+        declareValues()
+        checkMain()
+        for f in order
+            checkFunction(f)
+        (Program(records, sums, variants, functions), errors.toVector().sortBy(d -> d.at.offset))
+
+    private report(message: string, at: Position) = errors.append(Diagnostic(message, at))
+
+    private already(name: string, at: Position, previous: Position) = report(s"`$name` is already declared at $previous", at)
+
+    // The types: each name once, then each alias, record and sum resolved.
+    private declareTypes()
+        for item in m.items
+            item match
+                TypeDecl(n, d, at) ->
+                    if builtinType(n).isDefined() then report(s"`$n` is a built-in type", at)
+                    else typeDecls.get(n) match
+                        Some(prev) -> already(n, at, prev.at)
+                        None -> typeDecls = typeDecls.updated(n, TypeEntry(d, at))
+                _ -> ()
+        for item in m.items
+            item match
+                TypeDecl(n, d, at) if isDeclared(n, at) -> d match
+                    Alias(_) -> aliasType(n)
+                    Record(fields) -> records = records.updated(n, slots(fields))
+                    Sum(vs) -> sums = sums.updated(n, vs.map(v -> VariantSig(v.name, n, slots(v.fields))).toVector())
+                _ -> ()
+
+    // Whether the type declaration of `n` at `at` is the one that holds the name.
+    private isDeclared(n: string, at: Position) -> bool = typeDecls.get(n) match
+        Some(e) -> e.at == at
+        None -> false
+
+    // The fields of a record or a variant, or a function's parameters, each name once.
+    private slots(fields: List[FieldDecl]) -> Vector[Slot]
+        val out = Buffer[Slot]()
+        var seen: List[FieldDecl] = Nil
+        for f in fields
+            seen.find(g -> g.name == f.name) match
+                Some(g) -> already(f.name, f.at, g.at)
+                None -> ()
+            seen = Cons(f, seen)
+            out.append(Slot(f.name, resolve(f.declared)))
+        out.toVector()
+
+    resolve(t: TypeRef) -> Ty = t match
+        NamedType(n, at) -> builtinType(n) match
+            Some(b) -> b
+            None -> typeDecls.get(n) match
+                Some(TypeEntry(Record(_), _)) -> RecordT(n)
+                Some(TypeEntry(Sum(_), _)) -> SumT(n)
+                Some(TypeEntry(Alias(_), _)) -> aliasType(n)
+                None ->
+                    report(s"unknown type `$n`", at)
+                    ErrorT
+        ArrayType(e, size, at) ->
+            if size > maxArrayLength then report(s"an array's length must be at most $maxArrayLength, not $size", at)
+            ArrayT(resolve(e), size)
+
+    // What the alias `n` stands for, resolved once; an alias that reaches itself is reported at its
+    // declaration.
+    private aliasType(n: string) -> Ty
+        aliases.get(n) match
+            Some(t) -> return t
+            None -> ()
+        val entry = typeDecls(n)
+        if resolving.contains(n)
+            report(s"`$n` is defined in terms of itself", entry.at)
+            aliases = aliases.updated(n, ErrorT)
+            return ErrorT
+        val saved = resolving
+        resolving = Cons(n, resolving)
+        val t = entry.definition match
+            Alias(target) -> resolve(target)
+            _ -> ErrorT
+        resolving = saved
+        if !aliases.contains(n) then aliases = aliases.updated(n, t)
+        aliases(n)
+
+    // The values: imported modules, functions, records' names and variants, each name once.
+    private declareValues()
+        for imp in m.imports
+            if builtinModule(imp.name) then declareValue(imp.name, ModuleEntity(imp.name, imp.at), imp.at)
+            else report(s"there is no module `${imp.name}`; Kite's modules are `io` and `math`", imp.at)
+        for item in m.items
+            item match
+                FnDecl(n, params, result, body, at) ->
+                    val ps = slots(params.map(p -> FieldDecl(p.name, p.declared, p.at)))
+                    val r = result match
+                        Some(t) -> resolve(t)
+                        None -> UnitT
+                    val f = Function(n, ps, r, body, at)
+                    if builtinType(n).isDefined() then report(s"`$n` is a built-in type", at)
+                    elif declareValue(n, FnEntity(f), at)
+                        functions = functions.updated(n, f)
+                        order.append(f)
+                TypeDecl(n, d, at) if isDeclared(n, at) -> d match
+                    Record(_) -> declareValue(n, RecordEntity(n, at), at)
+                    Sum(vs) ->
+                        for v in vs
+                            if builtinType(v.name).isDefined() then report(s"`${v.name}` is a built-in type", v.at)
+                            elif declareValue(v.name, VariantEntity(VariantSig(v.name, n, Vector.empty[Slot]()), v.at), v.at)
+                                val sig = sums(n).find(s -> s.name == v.name).get()
+                                values = values.updated(v.name, VariantEntity(sig, v.at))
+                                variants = variants.updated(v.name, sig)
+                    Alias(_) -> ()
+                _ -> ()
+
+    private declareValue(n: string, e: Entity, at: Position) -> bool = values.get(n) match
+        Some(prev) ->
+            already(n, at, entityAt(prev))
+            false
+        None ->
+            values = values.updated(n, e)
+            true
+
+    private checkMain() = functions.get("main") match
+        None -> report("a program needs `fn main()`", m.at)
+        Some(f) ->
+            if !f.params.isEmpty() then report("`main` takes no parameters", f.at)
+            if f.result != UnitT then report("`main` returns nothing", f.at)
+
+    private checkFunction(f: Function)
+        locals = Nil
+        loops = 0
+        fnName = f.name
+        fnResult = f.result
+        for item in m.items
+            item match
+                FnDecl(_, params, _, _, at) if at == f.at ->
+                    var i = 0
+                    for p in params
+                        locals = Cons(Local(p.name, f.params(i).ty, "param", p.at), locals)
+                        i += 1
+                _ -> ()
+        check(f.body, Some(f.result))
+
+    private local(n: string) -> Option[Local] = locals.find(l -> l.name == n)
+
+    // Adds a local name, reporting one that names a local already in scope: Kite has no shadowing
+    // of locals.
+    private declareLocal(n: string, t: Ty, kind: string, at: Position)
+        local(n) match
+            Some(prev) -> already(n, at, prev.at)
+            None -> ()
+        locals = Cons(Local(n, t, kind, at), locals)
+
+    private isModule(n: string) -> bool
+        if local(n).isDefined() then return false
+        values.get(n) match
+            Some(ModuleEntity(_, _)) -> true
+            _ -> false
+
+    private unknownName(n: string, at: Position)
+        if builtinType(n).isDefined() || typeDecls.contains(n) then report(s"`$n` is a type, not a value", at)
+        elif builtinModule(n) then report(s"`$n` is not imported; add `import $n`", at)
+        else report(s"unknown name `$n`", at)
+
+    // The type `t` checked against `want`, reported where it does not fit. Wanting `()` is how a
+    // statement's value is discarded, so anything fits it: no type a program writes is `()`.
+    private expectFits(t: Ty, want: Ty, at: Position) -> Ty
+        if want != UnitT && !fits(t, want) then report(s"expected `${showTy(want)}`, found `${showTy(t)}`", at)
+        want
+
+    // The type of `e`. Where a type is wanted, a block, an `if` and a `match` pass it on to the
+    // expressions that make their value, so a mismatch is reported where it is; where `()` is
+    // wanted, the value is discarded, and the branches of an `if` or a `match` need not agree.
+    check(e: Expr, want: Option[Ty]) -> Ty = e match
+        BlockExpr(stmts, at) -> block(stmts, at, want)
+        If(c, t, o, at) -> ifExpr(c, t, o, at, want)
+        Match(x, arms, at) -> matchExpr(x, arms, at, want)
+        _ -> want match
+            Some(w) -> expectFits(leaf(e), w, startOf(e))
+            None -> leaf(e)
+
+    private block(stmts: List[Stmt], at: Position, want: Option[Ty]) -> Ty
+        val saved = locals
+        val n = stmts.length()
+        var i = 0
+        var t: Ty = UnitT
+        var valued = false
+        for s in stmts
+            i += 1
+            s match
+                ExprStmt(x) if i == n ->
+                    t = check(x, want)
+                    valued = true
+                _ -> t = stmt(s)
+        locals = saved
+        if valued then return t
+        want match
+            Some(w) -> expectFits(t, w, at)
+            None -> t
+
+    private condition(c: Expr)
+        val t = check(c, None)
+        if !fits(t, BoolT) then report(s"a condition must be a `bool`, not `${showTy(t)}`", startOf(c))
+
+    private ifExpr(c: Expr, t: Expr, o: Option[Expr], at: Position, want: Option[Ty]) -> Ty
+        condition(c)
+        o match
+            None ->
+                check(t, Some(UnitT))
+                want match
+                    Some(w) -> expectFits(UnitT, w, at)
+                    None -> UnitT
+            Some(x) -> want match
+                Some(w) ->
+                    check(t, want)
+                    check(x, want)
+                    w
+                None ->
+                    val a = check(t, None)
+                    val b = check(x, None)
+                    join(a, b) match
+                        Some(j) -> j
+                        None ->
+                            report(s"the branches of `if` have different types, `${showTy(a)}` and `${showTy(b)}`", at)
+                            ErrorT
+
+    private matchExpr(x: Expr, arms: List[Arm], at: Position, want: Option[Ty]) -> Ty
+        val st = check(x, None)
+        val pats = Buffer[Pat]()
+        var sound = st != ErrorT
+        var result: Ty = NeverT
+        for arm in arms
+            val saved = locals
+            pattern(arm.pattern, st) match
+                Some(p) -> pats.append(p)
+                None -> sound = false
+            val bt = check(arm.body, want)
+            locals = saved
+            if want.isEmpty() then join(result, bt) match
+                Some(j) -> result = j
+                None ->
+                    report(s"the arms of `match` have different types, `${showTy(result)}` and `${showTy(bt)}`", startOf(arm.body))
+                    result = ErrorT
+        if sound then exhaustive(pats.toVector(), arms, st, at)
+        want match
+            Some(w) -> w
+            None -> if arms.isEmpty() then ErrorT else result
+
+    // Reports an arm no value can reach, and a value no arm matches.
+    private exhaustive(pats: Vector[Pat], arms: List[Arm], st: Ty, at: Position)
+        var i = 0
+        for arm in arms
+            val before = pats.take(i).map(p -> Vector(p))
+            if useful(before, Vector(pats(i)), Vector(st)).isEmpty() then report("this arm can never match", patternAt(arm.pattern))
+            i += 1
+        useful(pats.map(p -> Vector(p)), Vector(Wild), Vector(st)) match
+            Some(w) -> report(s"this `match` does not cover every `${showTy(st)}` value, such as `${showPat(w(0))}`", at)
+            None -> ()
+
+    // The constructors of a type that has a fixed set of them, each with the types of its parts.
+    private ctors(t: Ty) -> Option[Vector[CtorInfo]] = t match
+        BoolT -> Some(Vector(CtorInfo("true", Vector.empty[Ty]()), CtorInfo("false", Vector.empty[Ty]())))
+        SumT(s) -> sums.get(s).map(vs -> vs.map(v -> CtorInfo(v.name, v.fields.map(f -> f.ty))))
+        RecordT(r) -> records.get(r).map(fs -> Vector(CtorInfo(r, fs.map(f -> f.ty))))
+        _ -> None
+
+    private partTypes(t: Ty, key: string, n: int) -> Vector[Ty]
+        ctors(t) match
+            Some(cs) -> cs.find(c -> c.key == key) match
+                Some(c) -> return c.parts
+                None -> ()
+            None -> ()
+        val b = Buffer[Ty]()
+        for _ in 0..<n
+            b.append(ErrorT)
+        b.toVector()
+
+    // The rows that can match a value built by `key`, with that constructor's parts in place of
+    // their first pattern.
+    private specialize(rows: Vector[Vector[Pat]], key: string, n: int) -> Vector[Vector[Pat]]
+        val out = Buffer[Vector[Pat]]()
+        for row in rows
+            row(0) match
+                Ctor(k, args) -> if k == key then out.append(args ++ row.drop(1))
+                Wild -> out.append(wilds(n) ++ row.drop(1))
+        out.toVector()
+
+    // The rows whose first pattern matches anything, without it.
+    private defaults(rows: Vector[Vector[Pat]]) -> Vector[Vector[Pat]]
+        val out = Buffer[Vector[Pat]]()
+        for row in rows
+            row(0) match
+                Wild -> out.append(row.drop(1))
+                _ -> ()
+        out.toVector()
+
+    // A value the patterns `v` match and no row does, as patterns, if there is one: whether a row of
+    // patterns is useful after `rows`.
+    private useful(rows: Vector[Vector[Pat]], v: Vector[Pat], tys: Vector[Ty]) -> Option[Vector[Pat]]
+        if v.isEmpty() then return if rows.isEmpty() then Some(Vector.empty[Pat]()) else None
+        val t = tys(0)
+        v(0) match
+            Ctor(k, args) ->
+                val n = args.length()
+                useful(specialize(rows, k, n), args ++ v.drop(1), partTypes(t, k, n) ++ tys.drop(1)).map(w -> rebuilt(k, n, w))
+            Wild ->
+                val used = Buffer[string]()
+                for row in rows
+                    row(0) match
+                        Ctor(k, _) -> if !used.contains(k) then used.append(k)
+                        Wild -> ()
+                val all = ctors(t)
+                val complete = all match
+                    Some(cs) -> !cs.isEmpty() && cs.forall(c -> used.contains(c.key))
+                    None -> false
+                if complete
+                    for c in all.get()
+                        val n = c.parts.length()
+                        useful(specialize(rows, c.key, n), wilds(n) ++ v.drop(1), c.parts ++ tys.drop(1)) match
+                            Some(w) -> return Some(rebuilt(c.key, n, w))
+                            None -> ()
+                    return None
+                useful(defaults(rows), v.drop(1), tys.drop(1)).map(w ->
+                    val missing: Pat = if used.isEmpty() then Wild else all match
+                        Some(cs) -> cs.find(c -> !used.contains(c.key)) match
+                            Some(c) -> Ctor(c.key, wilds(c.parts.length()))
+                            None -> Wild
+                        None -> Wild
+                    Vector(missing) ++ w)
+
+    private rebuilt(key: string, n: int, w: Vector[Pat]) -> Vector[Pat] = Vector[Pat](Ctor(key, w.take(n))) ++ w.drop(n)
+
+    // Checks a pattern against the type of the value matched, binding its names; answers it as
+    // exhaustiveness sees it, or `None` where it is wrong.
+    private pattern(p: Pattern, t: Ty) -> Option[Pat] = p match
+        WildPat(_) -> Some(Wild)
+        IntPat(v, at) -> literal(IntT, t, at, s"$v")
+        FloatPat(v, at) -> literal(FloatT, t, at, floatText(v + 0.0))
+        StrPat(text, at) -> literal(StrT, t, at, quoted(text))
+        BoolPat(v, at) -> literal(BoolT, t, at, s"$v")
+        NamePat(n, at) -> variants.get(n) match
+            Some(sig) -> constructor(n, sig.owner, SumT(sig.owner), sig.fields, Nil, t, at)
+            None ->
+                declareLocal(n, t, "pattern", at)
+                Some(Wild)
+        VariantPat(n, subs, at) -> variants.get(n) match
+            Some(sig) -> constructor(n, sig.owner, SumT(sig.owner), sig.fields, subs, t, at)
+            None -> records.get(n) match
+                Some(fields) -> constructor(n, n, RecordT(n), fields, subs, t, at)
+                None ->
+                    report(s"unknown variant `$n`", at)
+                    for s in subs
+                        pattern(s, ErrorT)
+                    None
+
+    private literal(lt: Ty, t: Ty, at: Position, key: string) -> Option[Pat]
+        if t == lt then return Some(Ctor(key, Vector.empty[Pat]()))
+        if t != ErrorT then report(s"the value matched is `${showTy(t)}`, not `${showTy(lt)}`", at)
+        None
+
+    private constructor(n: string, owner: string, ct: Ty, fields: Vector[Slot], subs: List[Pattern], t: Ty, at: Position) -> Option[Pat]
+        var good = true
+        if t != ct
+            if t != ErrorT then report(s"the value matched is `${showTy(t)}`, not `$owner`", at)
+            good = false
+        if subs.length() != fields.length()
+            report(s"`$n` has ${count(fields.length(), "field")}; the pattern gives ${subs.length()}", at)
+            good = false
+        val parts = Buffer[Pat]()
+        var i = 0
+        for s in subs
+            val ft = if good then fields(i).ty else ErrorT
+            pattern(s, ft) match
+                Some(q) -> parts.append(q)
+                None -> good = false
+            i += 1
+        if good then Some(Ctor(n, parts.toVector())) else None
+
+    // The type of an expression that is not a block, an `if` or a `match`.
+    private leaf(e: Expr) -> Ty = e match
+        IntLit(_, _) -> IntT
+        FloatLit(_, _) -> FloatT
+        BoolLit(_, _) -> BoolT
+        StrLit(parts, _) ->
+            for p in parts
+                p match
+                    Interp(x) -> if check(x, None) == UnitT then report("an interpolated `{…}` needs a value, and this one is `()`", startOf(x))
+                    Text(_) -> ()
+            StrT
+        Name(n, at) -> nameValue(n, at)
+        ArrayLit(items, _) -> items match
+            Nil -> ArrayT(NeverT, 0)
+            Cons(first, rest) ->
+                var el = check(first, None)
+                for item in rest
+                    val t = check(item, None)
+                    join(el, t) match
+                        Some(j) -> el = j
+                        None -> report(s"expected `${showTy(el)}`, found `${showTy(t)}`", startOf(item))
+                ArrayT(el, long(items.length()))
+        ArrayRepeat(item, n, _) ->
+            val t = check(item, None)
+            n match
+                IntLit(size, at) ->
+                    if size > maxArrayLength then report(s"an array's length must be at most $maxArrayLength, not $size", at)
+                    ArrayT(t, size)
+                _ ->
+                    check(n, None)
+                    report("the length in `[x; n]` must be an integer literal", startOf(n))
+                    ErrorT
+        Unary(op, x, at) ->
+            val t = check(x, None)
+            if op == "!"
+                if !fits(t, BoolT) then report(s"`!` needs a `bool`, not `${showTy(t)}`", at)
+                BoolT
+            elif t == IntT || t == FloatT || t == ErrorT || t == NeverT then t
+            else
+                report(s"`-` needs an `i64` or an `f64`, not `${showTy(t)}`", at)
+                ErrorT
+        Binary(op, l, r, at) -> binary(op, l, r, at)
+        RangeExpr(l, h, _, _) ->
+            check(l, Some(IntT))
+            check(h, Some(IntT))
+            RangeT
+        Call(f, args, _) -> call(f, args)
+        Index(target, i, _) ->
+            val t = check(target, None)
+            check(i, Some(IntT))
+            t match
+                ArrayT(el, _) -> el
+                ErrorT -> ErrorT
+                NeverT -> ErrorT
+                _ ->
+                    report(s"only an array can be indexed, not `${showTy(t)}`", startOf(target))
+                    ErrorT
+        Field(target, n, at) -> fieldOf(target, n, at)
+        _ -> check(e, None)
+
+    private nameValue(n: string, at: Position) -> Ty
+        local(n) match
+            Some(l) -> return l.ty
+            None -> ()
+        values.get(n) match
+            Some(FnEntity(_)) -> report(s"`$n` is a function; call it as `$n(…)`", at)
+            Some(RecordEntity(_, _)) -> report(s"`$n` is a record; build one as `$n(…)`", at)
+            Some(VariantEntity(sig, _)) ->
+                if sig.fields.isEmpty() then return SumT(sig.owner)
+                report(s"`$n` has ${count(sig.fields.length(), "field")}; build it as `$n(…)`", at)
+            Some(ModuleEntity(_, _)) -> report(s"`$n` is a module, not a value", at)
+            None -> unknownName(n, at)
+        ErrorT
+
+    // What an operator makes of operands of type `t`, reported where it takes no such operands.
+    private operands(op: string, shown: string, t: Ty, at: Position) -> Ty
+        if t == ErrorT || t == NeverT then return if isComparison(op) then BoolT else t
+        op match
+            "==" | "!=" -> BoolT
+            "<" | "<=" | ">" | ">=" ->
+                if t != IntT && t != FloatT && t != StrT then report(s"`$shown` needs `i64`, `f64` or `string` operands, not `${showTy(t)}`", at)
+                BoolT
+            "+" ->
+                if t == IntT || t == FloatT || t == StrT then return t
+                report(s"`$shown` needs `i64`, `f64` or `string` operands, not `${showTy(t)}`", at)
+                ErrorT
+            _ ->
+                if t == IntT || t == FloatT then return t
+                report(s"`$shown` needs `i64` or `f64` operands, not `${showTy(t)}`", at)
+                ErrorT
+
+    private isComparison(op: string) -> bool = op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">="
+
+    private binary(op: string, l: Expr, r: Expr, at: Position) -> Ty
+        if op == "&&" || op == "||"
+            check(l, Some(BoolT))
+            check(r, Some(BoolT))
+            return BoolT
+        val a = check(l, None)
+        val b = check(r, None)
+        join(a, b) match
+            Some(t) -> operands(op, op, t, at)
+            None ->
+                report(s"`$op` needs operands of one type, not `${showTy(a)}` and `${showTy(b)}`", at)
+                if isComparison(op) then BoolT else ErrorT
+
+    private call(f: Expr, args: List[Arg]) -> Ty = f match
+        Name(n, at) if local(n).isEmpty() -> values.get(n) match
+            Some(FnEntity(fn)) ->
+                arguments(s"`$n` takes", "argument", fn.params, args, at)
+                fn.result
+            Some(RecordEntity(_, _)) ->
+                arguments(s"`$n` has", "field", records.getOrElse(n, Vector.empty[Slot]()), args, at)
+                RecordT(n)
+            Some(VariantEntity(sig, _)) ->
+                arguments(s"`$n` has", "field", sig.fields, args, at)
+                SumT(sig.owner)
+            Some(ModuleEntity(_, _)) ->
+                report(s"`$n` is a module, not a function", at)
+                unchecked(args)
+            None ->
+                if n == "i64" then conversion(n, IntT, args, at)
+                elif n == "f64" then conversion(n, FloatT, args, at)
+                else
+                    if builtinType(n).isDefined() || typeDecls.contains(n) then report(s"`$n` is a type, not a function", at)
+                    elif builtinModule(n) then report(s"`$n` is not imported; add `import $n`", at)
+                    else report(s"unknown function `$n`", at)
+                    unchecked(args)
+        Field(Name(md, at), n, fat) if isModule(md) -> builtinFunction(md, n) match
+            Some((params, result)) ->
+                arguments(s"`$md.$n` takes", "argument", params, args, at)
+                result
+            None ->
+                report(s"module `$md` has no function `$n`", fat)
+                unchecked(args)
+        _ ->
+            if check(f, None) != ErrorT then report("only a function, a record or a variant can be called", startOf(f))
+            unchecked(args)
+
+    // Checks arguments that match nothing, for the mistakes inside them.
+    private unchecked(args: List[Arg]) -> Ty
+        for a in args
+            check(a.value, None)
+        ErrorT
+
+    // Matches a call's arguments to the parameters or fields, by position and then by name.
+    private arguments(who: string, kind: string, params: Vector[Slot], args: List[Arg], at: Position)
+        val given = Buffer[bool]()
+        for _ in params
+            given.append(false)
+        val tooMany = args.length() > params.length()
+        if tooMany then report(s"$who ${count(params.length(), kind)}, but ${args.length()} are given", at)
+        var position = 0
+        var named = false
+        for a in args
+            a.name match
+                None ->
+                    if named
+                        report("a positional argument cannot follow a named one", startOf(a.value))
+                        check(a.value, None)
+                    elif position >= params.length() then check(a.value, None)
+                    else
+                        check(a.value, Some(params(position).ty))
+                        given(position) = true
+                        position += 1
+                Some(name) ->
+                    named = true
+                    val i = params.indexWhere(p -> p.name == name)
+                    if i < 0
+                        report(s"there is no ${if kind == "field" then "field" else "parameter"} `$name`", startOf(a.value))
+                        check(a.value, None)
+                    else
+                        if given(i) then report(s"`$name` is given twice", startOf(a.value))
+                        given(i) = true
+                        check(a.value, Some(params(i).ty))
+        if !tooMany
+            var i = 0
+            for p in params
+                if !given(i) then report(s"no argument for `${p.name}`", at)
+                i += 1
+
+    private conversion(n: string, result: Ty, args: List[Arg], at: Position) -> Ty
+        args match
+            Cons(Arg(None, x), Nil) ->
+                val t = check(x, None)
+                if t != IntT && t != FloatT && t != ErrorT && t != NeverT then report(s"`$n` converts an `i64` or an `f64`, not `${showTy(t)}`", startOf(x))
+            _ ->
+                report(s"`$n(…)` takes one argument, unnamed", at)
+                unchecked(args)
+        result
+
+    private fieldOf(target: Expr, n: string, at: Position) -> Ty
+        target match
+            Name(md, _) if isModule(md) ->
+                if builtinFunction(md, n).isDefined() then report(s"`$md.$n` is a function; call it as `$md.$n(…)`", at)
+                else report(s"module `$md` has no function `$n`", at)
+                return ErrorT
+            _ -> ()
+        val t = check(target, None)
+        t match
+            RecordT(r) -> records.getOrElse(r, Vector.empty[Slot]()).find(s -> s.name == n) match
+                Some(s) -> s.ty
+                None ->
+                    report(s"`$r` has no field `$n`", at)
+                    ErrorT
+            SumT(s) ->
+                report(s"`$s` is a sum type; take its fields apart with `match`", at)
+                ErrorT
+            ErrorT -> ErrorT
+            NeverT -> ErrorT
+            _ ->
+                report(s"`${showTy(t)}` has no fields", at)
+                ErrorT
+
+    // Checks a statement; answers `NeverT` for one that does not finish.
+    private stmt(s: Stmt) -> Ty = s match
+        Let(mutable, n, declared, value, at) ->
+            val t = declared match
+                Some(tr) ->
+                    val dt = resolve(tr)
+                    check(value, Some(dt))
+                    dt
+                None -> check(value, None)
+            declareLocal(n, t, if mutable then "var" else "let", at)
+            UnitT
+        Assign(op, target, value, at) ->
+            val t = place(target)
+            if op != "=" then operands(op.stripSuffix("="), op, t, at)
+            check(value, Some(t))
+            UnitT
+        ExprStmt(x) ->
+            check(x, Some(UnitT))
+            UnitT
+        While(c, body, _) ->
+            condition(c)
+            loops += 1
+            check(body, Some(UnitT))
+            loops -= 1
+            UnitT
+        For(n, over, body, at) ->
+            val ot = check(over, None)
+            val el = ot match
+                RangeT -> IntT
+                ArrayT(e, _) -> e
+                ErrorT -> ErrorT
+                NeverT -> ErrorT
+                _ ->
+                    report(s"`for` needs a range or an array, not `${showTy(ot)}`", startOf(over))
+                    ErrorT
+            val saved = locals
+            declareLocal(n, el, "loop", at)
+            loops += 1
+            check(body, Some(UnitT))
+            loops -= 1
+            locals = saved
+            UnitT
+        Return(v, at) ->
+            v match
+                None -> if fnResult != UnitT then report(s"`$fnName` returns `${showTy(fnResult)}`, so `return` needs a value", at)
+                Some(x) ->
+                    if fnResult == UnitT
+                        report(s"`$fnName` returns nothing, so `return` takes no value", at)
+                        check(x, None)
+                    else check(x, Some(fnResult))
+            NeverT
+        Break(at) ->
+            if loops == 0 then report("`break` is outside a loop", at)
+            NeverT
+        Continue(at) ->
+            if loops == 0 then report("`continue` is outside a loop", at)
+            NeverT
+
+    // The type of an assignment's target, reported where it is not a place a `var` holds.
+    private place(target: Expr) -> Ty
+        root(target) match
+            None ->
+                report("only a variable, an element or a field can be assigned to", startOf(target))
+                check(target, None)
+                ErrorT
+            Some((n, at)) -> local(n) match
+                None ->
+                    if values.contains(n) then report(s"`$n` is not a variable", at) else unknownName(n, at)
+                    ErrorT
+                Some(l) ->
+                    l.kind match
+                        "let" -> report(s"`$n` is a `let`; declare it with `var` to assign to it", at)
+                        "param" -> report(s"`$n` is a parameter, which cannot be assigned to", at)
+                        "loop" -> report(s"`$n` is a loop's variable, which cannot be assigned to", at)
+                        "pattern" -> report(s"`$n` is bound by a pattern, which cannot be assigned to", at)
+                        _ -> ()
+                    check(target, None)
+
+    // The variable a place begins with: `g` in `g[i].x`.
+    private root(e: Expr) -> Option[(string, Position)] = e match
+        Name(n, at) -> Some((n, at))
+        Index(t, _, _) -> root(t)
+        Field(t, _, _) -> root(t)
+        _ -> None

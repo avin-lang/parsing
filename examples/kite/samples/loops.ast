@@ -1,6 +1,7 @@
 (module loops)
+(import io)
 (fn factorial ((n i64)) -> i64 (block (var result 1) (var i 2) (while (<= i n) (block (*= result i) (+= i 1))) result))
 (fn recursive ((n i64)) -> i64 (block (if (<= n 1) (block 1) (block (* n (call recursive (- n 1)))))))
 (fn sumTo ((n i64)) -> i64 (block (var total 0) (for k (..= 1 n) (block (if (== (% k 2) 0) (block (continue))) (+= total k) (if (> total 1000) (block (break))))) (return total)))
 (fn collatz ((start i64)) -> i64 (block (var n start) (var steps 0) (while (!= n 1) (block (= n (match (% n 2) (0 (/ n 2)) (_ (+ (* 3 n) 1)))) (+= steps 1))) steps))
-(fn main () (block (for n (.. 0 10) (block (call print (str n "! = " (call factorial n) " = " (call recursive n))))) (call print (str "odd numbers to 99 add up to " (call sumTo 99))) (call print (str "27 takes " (call collatz 27) " steps"))))
+(fn main () (block (for n (.. 0 10) (block (call (. io println) (str n "! = " (call factorial n) " = " (call recursive n))))) (call (. io println) (str "odd numbers to 99 add up to " (call sumTo 99))) (call (. io println) (str "27 takes " (call collatz 27) " steps"))))

@@ -1,0 +1,68 @@
+module tests
+
+// Runtime errors: each stops the program at the place it happens, with `runtime error:` before its
+// message, after the output the program had already written.
+
+@test("integer overflow in every operator that can overflow")
+overflow()
+    assertEq(run("let a = 9223372036854775807\nlet b = a + 1"), "t:5:11: runtime error: integer overflow in `+`\n")
+    assertEq(run("let a = -9223372036854775807\nlet b = a - 2"), "t:5:11: runtime error: integer overflow in `-`\n")
+    assertEq(run("let a = 3037000500\nlet b = a * a"), "t:5:11: runtime error: integer overflow in `*`\n")
+    assertEq(run("let a = -9223372036854775807 - 1\nlet b = a * -1"), "t:5:11: runtime error: integer overflow in `*`\n")
+    assertEq(run("let a = -9223372036854775807 - 1\nlet b = -1 * a"), "t:5:12: runtime error: integer overflow in `*`\n")
+    assertEq(run("let a = 4611686018427387904\nlet b = a * 2"), "t:5:11: runtime error: integer overflow in `*`\n")
+    assertEq(run("let a = -4611686018427387905\nlet b = a * 2"), "t:5:11: runtime error: integer overflow in `*`\n")
+    assertEq(run("let a = -9223372036854775807 - 1\nlet b = a / -1"), "t:5:11: runtime error: integer overflow in `/`\n")
+    assertEq(run("let a = -9223372036854775807 - 1\nlet b = -a"), "t:5:9: runtime error: integer overflow in `-`\n")
+    assertEq(run("var a = 9223372036854775807\na += 1"), "t:5:3: runtime error: integer overflow in `+`\n")
+    assertEq(run("var a = -9223372036854775807\na -= 5"), "t:5:3: runtime error: integer overflow in `-`\n")
+    assertEq(run("var a = 9223372036854775807\na *= -2"), "t:5:3: runtime error: integer overflow in `*`\n")
+    assertEq(run("var a = -9223372036854775807 - 1\na /= -1"), "t:5:3: runtime error: integer overflow in `/`\n")
+    // The largest results that fit do not overflow.
+    assertEq(values(["4611686018427387903 * 2 + 1", "-4611686018427387904 * 2", "9223372036854775807 + 0", "-9223372036854775807 - 1 - 0"]), "9223372036854775807\n-9223372036854775808\n9223372036854775807\n-9223372036854775808\n")
+
+@test("an integer divided by zero stops the program; a real does not")
+divisionByZero()
+    assertEq(run("let z = 0\nlet a = 1 / z"), "t:5:11: runtime error: division by zero\n")
+    assertEq(run("let z = 0\nlet a = 1 % z"), "t:5:11: runtime error: division by zero\n")
+    assertEq(run("var a = 5\na /= 0"), "t:5:3: runtime error: division by zero\n")
+    assertEq(run("var a = 5\na %= 0"), "t:5:3: runtime error: division by zero\n")
+    assertEq(values(["1.0 / 0.0", "1.0 % 0.0"]), "inf\nNaN\n")
+
+@test("an index outside the array stops the program at the index")
+indexOutOfBounds()
+    assertEq(run("let a = [1, 2, 3]\nlet x = a[3]"), "t:5:11: runtime error: index 3 is out of bounds for an array of length 3\n")
+    assertEq(run("let a = [1, 2, 3]\nlet x = a[0 - 1]"), "t:5:11: runtime error: index -1 is out of bounds for an array of length 3\n")
+    assertEq(run("let a: [i64; 0] = []\nlet x = a[0]"), "t:5:11: runtime error: index 0 is out of bounds for an array of length 0\n")
+    assertEq(run("var a = [1, 2]\na[2] = 5"), "t:5:3: runtime error: index 2 is out of bounds for an array of length 2\n")
+    assertEq(run("var a = [1, 2]\na[-9223372036854775807] += 5"), "t:5:3: runtime error: index -9223372036854775807 is out of bounds for an array of length 2\n")
+    assertEq(run("var g = [[1, 2]; 3]\ng[2][2] = 0"), "t:5:6: runtime error: index 2 is out of bounds for an array of length 2\n")
+    assertEq(run("let g = [[1, 2]; 3]\nlet x = g[1][9223372036854775807]"), "t:5:14: runtime error: index 9223372036854775807 is out of bounds for an array of length 2\n")
+    // The value is evaluated before the place is checked; the output before the error is kept.
+    assertEq(out("module t\nimport io\nfn v() -> i64 { io.println(\"v\")\n1 }\nfn main() {\nvar a = [0]\na[1] = v()\n}\n"), "v\nt:7:3: runtime error: index 1 is out of bounds for an array of length 1\n")
+
+@test("i64 of a real it cannot hold stops the program")
+conversion()
+    assertEq(run("let x = 0.0 / 0.0\nlet a = i64(x)"), "t:5:9: runtime error: `i64` cannot hold NaN\n")
+    assertEq(run("let a = i64(1.0 / 0.0)"), "t:4:9: runtime error: `i64` cannot hold inf\n")
+    assertEq(run("let a = i64(-1.0 / 0.0)"), "t:4:9: runtime error: `i64` cannot hold -inf\n")
+    assertEq(run("let a = i64(9223372036854775808.0)"), "t:4:9: runtime error: `i64` cannot hold 9223372036854776000.0\n")
+    assertEq(run("let a = i64(-1e19)"), "t:4:9: runtime error: `i64` cannot hold -10000000000000000000.0\n")
+
+@test("calls nested deeper than 100,000 stop the program")
+stackOverflow()
+    val program = "module t\nimport io\nfn down(n: i64) -> i64 { if n == 0 { 0 } else { 1 + down(n - 1) } }\nfn forever(n: i64) -> i64 { forever(n + 1) }\nfn main() {\nio.println(\"{down(99999)}\")\n}\n"
+    assertEq(out(program), "t:3:53: runtime error: stack overflow: calls nested more than 100000 deep\n")
+    assertEq(out(program.replace("down(99999)", "forever(0)")), "t:4:29: runtime error: stack overflow: calls nested more than 100000 deep\n")
+    assertEq(out(program.replace("down(99999)", "down(99998)")), "99998\n")
+
+@test("a runtime error deep in calls is reported where it happens, and stops everything")
+nested()
+    val program = "module t\nimport io\nfn get(a: [i64; 2], i: i64) -> i64 { a[i] }\nfn sum(a: [i64; 2], n: i64) -> i64 { var t = 0\nfor i in 0..n { t += get(a, i) }\nt }\nfn main() {\nio.println(\"{sum([1, 2], 2)}\")\nio.println(\"{sum([1, 2], 3)}\")\nio.println(\"never\")\n}\n"
+    assertEq(out(program), "3\nt:3:40: runtime error: index 2 is out of bounds for an array of length 2\n")
+    assertEq(out("module t\nimport io\nfn main() {\nfor i in 0..10 { io.print(\"{i}\")\nlet x = 10 / (5 - i) }\n}\n"), "012345t:5:12: runtime error: division by zero\n")
+
+@test("a program that does not check does not run")
+notChecked()
+    assertEq(out("module t\nimport io\nfn main() {\nio.println(\"a\")\nlet x: i64 = \"s\"\n}\n"), "t:5:14: expected `i64`, found `string`\n")
+    assertEq(out("module t\nfn main( {"), "t:2:10: expected name or `)` to close `(` at 2:8, found '{'\n")

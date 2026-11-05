@@ -1,0 +1,389 @@
+module kite
+
+// Kite's evaluator: it walks the syntax tree of a checked program, from `main`. Everything the
+// checker guarantees, such as a name being bound or an operand having the right type, it takes as
+// given; what only running can find, an overflow, an index out of bounds, a division by zero, it
+// reports as a runtime error at the place it happens, which stops the program.
+import avin.math
+import avin.threads.spawn
+import dev.avinlang.parsing.Position
+
+// How deeply calls may nest before the program stops with a runtime error, and the stack the
+// evaluator runs on, which holds that many.
+val callLimit: long = 100000
+val evaluatorStack: long = 4294967296
+
+// Why evaluation left an expression early: a runtime error, or a `return`, `break` or `continue`
+// on its way to what it leaves.
+data Halt
+    Fail(message: string, at: Position)
+    Returned(value: Value)
+    Broke
+    Continued
+
+// A local variable: its name, and the value it holds now.
+class Cell(val name: string, var value: Value)
+
+// One step from a variable into the value it holds, in an assignment's target: an element, or a
+// field by its index.
+data Step
+    AtIndex(index: long, at: Position)
+    AtField(index: int)
+
+// Runs a checked program's `main`, writing its output to `out`, and answers the runtime error that
+// stopped it, if one did. It runs on a thread of its own, whose stack holds `callLimit` calls.
+execute(p: Program, out: Writer) -> Option[Diagnostic]
+    val worker = spawn(() -> Interpreter(p, out, callLimit).run(), evaluatorStack)
+    worker.join()
+
+class Interpreter(p: Program, out: Writer, limit: long)
+    private var depth: long = 0
+
+    run() -> Option[Diagnostic]
+        val entry = p.functions("main")
+        callFunction(entry, Vector.empty[Value](), entry.at) match
+            Err(Fail(message, at)) -> Some(Diagnostic(message, at))
+            _ -> None
+
+    private fail(message: string, at: Position) -> Result[Value, Halt] = Err(Fail(message, at))
+
+    private callFunction(f: Function, args: Vector[Value], at: Position) -> Result[Value, Halt]
+        if depth >= limit then return fail(s"stack overflow: calls nested more than $limit deep", at)
+        depth += 1
+        var env: List[Cell] = Nil
+        var i = 0
+        for a in args
+            env = Cons(Cell(f.params(i).name, a), env)
+            i += 1
+        val r = eval(f.body, env)
+        depth -= 1
+        r match
+            Ok(v) -> Ok(if f.result == UnitT then UnitV else v)
+            Err(Returned(v)) -> Ok(v)
+            Err(h) -> Err(h)
+
+    private lookup(env: List[Cell], n: string) -> Option[Cell] = env.find(c -> c.name == n)
+
+    eval(e: Expr, env: List[Cell]) -> Result[Value, Halt] = e match
+        IntLit(v, _) -> Ok(IntV(v))
+        FloatLit(v, _) -> Ok(FloatV(v))
+        BoolLit(v, _) -> Ok(BoolV(v))
+        StrLit(parts, _) ->
+            val w = StringWriter()
+            for part in parts
+                part match
+                    Text(t) -> w.write(t)
+                    Interp(x) -> w.write(valueText(eval(x, env)?, p, false))
+            Ok(StrV(w.text()))
+        Name(n, _) -> lookup(env, n) match
+            Some(c) -> Ok(c.value)
+            None -> Ok(VariantV(n, Vector.empty[Value]()))
+        ArrayLit(items, _) ->
+            val b = Buffer[Value]()
+            for x in items
+                b.append(eval(x, env)?)
+            Ok(ArrayV(b.toVector()))
+        ArrayRepeat(item, count, _) ->
+            val v = eval(item, env)?
+            val n = integer(eval(count, env)?)
+            val b = Buffer[Value]()
+            for _ in 0..<n
+                b.append(v)
+            Ok(ArrayV(b.toVector()))
+        Unary(op, x, at) -> eval(x, env)? match
+            BoolV(b) -> Ok(BoolV(!b))
+            IntV(k) -> if k == long.MinValue then fail("integer overflow in `-`", at) else Ok(IntV(-k))
+            FloatV(r) -> Ok(FloatV(-r))
+            v -> Ok(v)
+        Binary(op, l, r, at) ->
+            if op == "&&" || op == "||"
+                val a = eval(l, env)? match
+                    BoolV(b) -> b
+                    _ -> false
+                if a == (op == "||") then return Ok(BoolV(a))
+                return eval(r, env)
+            val a = eval(l, env)?
+            val b = eval(r, env)?
+            arith(op, a, b, at)
+        RangeExpr(l, h, inclusive, _) ->
+            val low = integer(eval(l, env)?)
+            val high = integer(eval(h, env)?)
+            Ok(RangeV(low, high, inclusive))
+        Call(f, args, _) -> call(f, args, env)
+        Index(t, i, _) ->
+            val target = eval(t, env)?
+            val k = integer(eval(i, env)?)
+            element(target, k, startOf(i))
+        Field(t, n, _) -> eval(t, env)? match
+            RecordV(r, fields) -> Ok(fields(fieldIndex(r, n)))
+            v -> Ok(v)
+        BlockExpr(stmts, _) -> block(stmts, env)
+        If(c, t, o, _) ->
+            val yes = eval(c, env)? match
+                BoolV(b) -> b
+                _ -> false
+            if yes
+                val v = eval(t, env)?
+                if o.isEmpty() then Ok(UnitV) else Ok(v)
+            else o match
+                Some(x) -> eval(x, env)
+                None -> Ok(UnitV)
+        Match(x, arms, at) ->
+            val v = eval(x, env)?
+            for arm in arms
+                val binds = Buffer[Cell]()
+                if matches(arm.pattern, v, binds)
+                    var scope = env
+                    for c in binds
+                        scope = Cons(c, scope)
+                    return eval(arm.body, scope)
+            fail("no arm of the `match` matches", at)
+
+    private integer(v: Value) -> long = v match
+        IntV(k) -> k
+        _ -> 0
+
+    private fieldIndex(record: string, n: string) -> int = p.records(record).indexWhere(s -> s.name == n)
+
+    private element(target: Value, k: long, at: Position) -> Result[Value, Halt] = target match
+        ArrayV(items) ->
+            if k < 0 || k >= long(items.length()) then fail(s"index $k is out of bounds for an array of length ${items.length()}", at)
+            else Ok(items(int(k)))
+        v -> Ok(v)
+
+    private block(stmts: List[Stmt], env: List[Cell]) -> Result[Value, Halt]
+        var scope = env
+        var last: Value = UnitV
+        for s in stmts
+            last = UnitV
+            s match
+                Let(_, n, _, value, _) -> scope = Cons(Cell(n, eval(value, scope)?), scope)
+                ExprStmt(x) -> last = eval(x, scope)?
+                _ -> exec(s, scope)?
+        Ok(last)
+
+    private exec(s: Stmt, env: List[Cell]) -> Result[Value, Halt] = s match
+        Assign(op, target, value, at) ->
+            val (cell, steps) = place(target, env)?
+            if op == "="
+                val v = eval(value, env)?
+                cell.value = store(cell.value, steps, 0, v)?
+            else
+                val current = load(cell.value, steps)?
+                val v = eval(value, env)?
+                val updated = arith(op.stripSuffix("="), current, v, at)?
+                cell.value = store(cell.value, steps, 0, updated)?
+            Ok(UnitV)
+        While(c, body, _) ->
+            while true
+                val go = eval(c, env)? match
+                    BoolV(b) -> b
+                    _ -> false
+                if !go then return Ok(UnitV)
+                eval(body, env) match
+                    Err(Broke) -> return Ok(UnitV)
+                    Err(Continued) -> ()
+                    Err(h) -> return Err(h)
+                    Ok(_) -> ()
+            Ok(UnitV)
+        For(n, over, body, _) -> eval(over, env)? match
+            RangeV(low, high, inclusive) ->
+                rangeEnds(low, high, inclusive) match
+                    None -> Ok(UnitV)
+                    Some((first, last)) ->
+                        var i = first
+                        while true
+                            eval(body, Cons(Cell(n, IntV(i)), env)) match
+                                Err(Broke) -> return Ok(UnitV)
+                                Err(Continued) -> ()
+                                Err(h) -> return Err(h)
+                                Ok(_) -> ()
+                            if i == last then return Ok(UnitV)
+                            i += 1
+                        Ok(UnitV)
+            ArrayV(items) ->
+                for item in items
+                    eval(body, Cons(Cell(n, item), env)) match
+                        Err(Broke) -> return Ok(UnitV)
+                        Err(Continued) -> ()
+                        Err(h) -> return Err(h)
+                        Ok(_) -> ()
+                Ok(UnitV)
+            _ -> Ok(UnitV)
+        Return(v, _) -> v match
+            Some(x) -> Err(Returned(eval(x, env)?))
+            None -> Err(Returned(UnitV))
+        Break(_) -> Err(Broke)
+        Continue(_) -> Err(Continued)
+        ExprStmt(x) -> eval(x, env)
+        Let(_, _, _, _, _) -> Ok(UnitV)
+
+    // The variable an assignment's target begins with, and the steps from it to the place, each
+    // index evaluated once, left to right.
+    private place(target: Expr, env: List[Cell]) -> Result[(Cell, Vector[Step]), Halt] = target match
+        Index(t, i, _) ->
+            val (cell, steps) = place(t, env)?
+            val k = integer(eval(i, env)?)
+            Ok((cell, steps ++ Vector(AtIndex(k, startOf(i)))))
+        Field(t, n, _) ->
+            val (cell, steps) = place(t, env)?
+            val record = load(cell.value, steps)? match
+                RecordV(r, _) -> r
+                _ -> ""
+            Ok((cell, steps ++ Vector(AtField(fieldIndex(record, n)))))
+        Name(n, _) -> Ok((lookup(env, n).get(), Vector.empty[Step]()))
+        _ -> Err(Fail("not a place", startOf(target)))
+
+    private load(v: Value, steps: Vector[Step]) -> Result[Value, Halt]
+        var current = v
+        for s in steps
+            current = s match
+                AtIndex(k, at) -> element(current, k, at)?
+                AtField(j) -> current match
+                    RecordV(_, fields) -> fields(j)
+                    other -> other
+        Ok(current)
+
+    // `v` with the place `steps` reach, from step `from` on, holding `x`.
+    private store(v: Value, steps: Vector[Step], from: int, x: Value) -> Result[Value, Halt]
+        if from == steps.length() then return Ok(x)
+        steps(from) match
+            AtIndex(k, at) -> v match
+                ArrayV(items) ->
+                    val old = element(v, k, at)?
+                    Ok(ArrayV(items.updated(int(k), store(old, steps, from + 1, x)?)))
+                _ -> Ok(v)
+            AtField(j) -> v match
+                RecordV(r, fields) -> Ok(RecordV(r, fields.updated(j, store(fields(j), steps, from + 1, x)?)))
+                _ -> Ok(v)
+
+    // An operator applied to two values of one type.
+    private arith(op: string, a: Value, b: Value, at: Position) -> Result[Value, Halt]
+        if op == "==" then return Ok(BoolV(valueEq(a, b)))
+        if op == "!=" then return Ok(BoolV(!valueEq(a, b)))
+        (a, b) match
+            (IntV(x), IntV(y)) -> intOp(op, x, y, at)
+            (FloatV(x), FloatV(y)) -> Ok(op match
+                "+" -> FloatV(x + y)
+                "-" -> FloatV(x - y)
+                "*" -> FloatV(x * y)
+                "/" -> FloatV(x / y)
+                "%" -> FloatV(x % y)
+                "<" -> BoolV(x < y)
+                "<=" -> BoolV(x <= y)
+                ">" -> BoolV(x > y)
+                _ -> BoolV(x >= y))
+            (StrV(x), StrV(y)) -> Ok(op match
+                "+" -> StrV(x + y)
+                "<" -> BoolV(x.compare(y) < 0)
+                "<=" -> BoolV(x.compare(y) <= 0)
+                ">" -> BoolV(x.compare(y) > 0)
+                _ -> BoolV(x.compare(y) >= 0))
+            _ -> Ok(a)
+
+    // Integer arithmetic, which stops the program where the result does not fit in an `i64` and
+    // where it divides by zero.
+    private intOp(op: string, x: long, y: long, at: Position) -> Result[Value, Halt]
+        val overflow = s"integer overflow in `$op`"
+        op match
+            "+" ->
+                if (y > 0 && x > long.MaxValue - y) || (y < 0 && x < long.MinValue - y) then fail(overflow, at)
+                else Ok(IntV(x + y))
+            "-" ->
+                if (y < 0 && x > long.MaxValue + y) || (y > 0 && x < long.MinValue + y) then fail(overflow, at)
+                else Ok(IntV(x - y))
+            "*" ->
+                if x == 0 || y == 0 then return Ok(IntV(0))
+                if (x == -1 && y == long.MinValue) || (y == -1 && x == long.MinValue) then return fail(overflow, at)
+                val r = x *% y
+                if x == -1 || y == -1 || r / y == x then Ok(IntV(r)) else fail(overflow, at)
+            "/" ->
+                if y == 0 then fail("division by zero", at)
+                elif x == long.MinValue && y == -1 then fail(overflow, at)
+                else Ok(IntV(x / y))
+            "%" -> if y == 0 then fail("division by zero", at) elif y == -1 then Ok(IntV(0)) else Ok(IntV(x % y))
+            "<" -> Ok(BoolV(x < y))
+            "<=" -> Ok(BoolV(x <= y))
+            ">" -> Ok(BoolV(x > y))
+            _ -> Ok(BoolV(x >= y))
+
+    private matches(pat: Pattern, v: Value, binds: Buffer[Cell]) -> bool = pat match
+        WildPat(_) -> true
+        IntPat(k, _) -> valueEq(v, IntV(k))
+        FloatPat(k, _) -> valueEq(v, FloatV(k))
+        StrPat(t, _) -> valueEq(v, StrV(t))
+        BoolPat(b, _) -> valueEq(v, BoolV(b))
+        NamePat(n, _) ->
+            if p.variants.contains(n) then return valueEq(v, VariantV(n, Vector.empty[Value]()))
+            binds.append(Cell(n, v))
+            true
+        VariantPat(n, subs, _) -> v match
+            VariantV(m, fields) -> m == n && all(subs, fields, binds)
+            RecordV(m, fields) -> m == n && all(subs, fields, binds)
+            _ -> false
+
+    private all(subs: List[Pattern], fields: Vector[Value], binds: Buffer[Cell]) -> bool
+        var i = 0
+        for s in subs
+            if !matches(s, fields(i), binds) then return false
+            i += 1
+        true
+
+    // The values of a call's arguments in the order of the parameters or fields they are for.
+    private ordered(params: Vector[Slot], args: List[Arg], env: List[Cell]) -> Result[Vector[Value], Halt]
+        val slots = Buffer[Value]()
+        for _ in params
+            slots.append(UnitV)
+        var position = 0
+        for a in args
+            val v = eval(a.value, env)?
+            a.name match
+                None ->
+                    slots(position) = v
+                    position += 1
+                Some(n) -> slots(params.indexWhere(q -> q.name == n)) = v
+        Ok(slots.toVector())
+
+    private call(f: Expr, args: List[Arg], env: List[Cell]) -> Result[Value, Halt] = f match
+        Name(n, at) ->
+            p.functions.get(n) match
+                Some(fn) -> return callFunction(fn, ordered(fn.params, args, env)?, at)
+                None -> ()
+            p.records.get(n) match
+                Some(fields) -> return Ok(RecordV(n, ordered(fields, args, env)?))
+                None -> ()
+            p.variants.get(n) match
+                Some(sig) -> return Ok(VariantV(n, ordered(sig.fields, args, env)?))
+                None -> ()
+            val x = args match
+                Cons(a, _) -> eval(a.value, env)?
+                Nil -> UnitV
+            conversion(n, x, at)
+        Field(Name(md, _), n, at) ->
+            val vs = Buffer[Value]()
+            for a in args
+                vs.append(eval(a.value, env)?)
+            builtin(md, n, vs.toVector(), at)
+        _ -> fail("not a function", startOf(f))
+
+    private conversion(n: string, x: Value, at: Position) -> Result[Value, Halt] = (n, x) match
+        ("f64", IntV(k)) -> Ok(FloatV(real(k)))
+        ("i64", FloatV(r)) ->
+            if r >= -9223372036854775808.0 && r < 9223372036854775808.0 then Ok(IntV(long(r)))
+            else fail(s"`i64` cannot hold ${floatText(r)}", at)
+        _ -> Ok(x)
+
+    private builtin(md: string, n: string, args: Vector[Value], at: Position) -> Result[Value, Halt]
+        val text = args(0) match
+            StrV(t) -> t
+            _ -> ""
+        val x = args(0) match
+            FloatV(r) -> r
+            _ -> 0.0
+        (md, n) match
+            ("io", "print") -> out.write(text)
+            ("io", "println") -> out.write(text + "\n")
+            ("math", "abs") -> return Ok(FloatV(math.abs(x)))
+            ("math", "sqrt") -> return Ok(FloatV(math.sqrt(x)))
+            _ -> return fail(s"no function `$md.$n`", at)
+        Ok(UnitV)

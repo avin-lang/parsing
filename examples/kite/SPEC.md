@@ -8,6 +8,8 @@ is a module of functions and types:
 ```kite
 module geometry
 
+import io
+
 type Shape =
     | Circle(r: f64)
     | Rect(w: f64, h: f64)
@@ -22,7 +24,7 @@ fn area(s: Shape) -> f64 {
 fn main() {
     let shapes = [Circle(r: 1.0), Rect(w: 2.0, h: 3.0)]
     for i in 0..2 {
-        print("shape {i} has area {area(shapes[i])}")
+        io.println("shape {i} has area {area(shapes[i])}")
     }
 }
 ```
@@ -30,7 +32,9 @@ fn main() {
 Blocks are braces, a line end ends a statement, and blocks, `if` and `match` are expressions whose
 value is their last expression's. The types are `i64`, `f64`, `bool`, `string`, fixed arrays
 `[T; n]`, records and sum types. There are no generics, traits, closures or overloading, and no
-garbage collector to think about: values are copied.
+garbage collector to think about: values are copied. `kite check` reports every mistake in a file
+and `kite run` checks a program and runs it; [Semantics](#semantics) says what each construct
+means and what the checker refuses.
 
 ## Grammar
 
@@ -147,9 +151,132 @@ bad.kite:5:1: expected operator or `)` to close `(` at 3:13, found '}'
 resynchronise at the next `fn` or `type`, at a block's `}` and at a line end, and it waits on the
 parsing library: see Decisions.
 
+## Semantics
+
+[`kite/check.avin`](kite/check.avin) is the checker and [`kite/eval.avin`](kite/eval.avin) the
+evaluator. The checker reports every mistake it finds, in the order of the text, as
+`file:line:column: message`; a program with any is not run.
+
+### Programs, modules and names
+
+- **A file is a program.** `kite run` calls its `main`, which takes no parameters and returns
+  nothing; a file without one is an error at 1:1. The module's name is free.
+- **`import` names a built-in module**: `io`, with `print(text: string)` and
+  `println(text: string)`, and `math`, with `abs(x: f64) -> f64` and `sqrt(x: f64) -> f64`. A
+  module's functions are called through its name, `io.println("…")`, and only once it is imported;
+  a module is not a value.
+- **A module has two namespaces.** Types: aliases, records and sums. Values: functions, records
+  (whose name builds one), variants and imported modules. A name is declared once in each; a
+  record's name is in both. Variants are not qualified by their sum, so two sums cannot have a
+  variant of one name. `i64`, `f64`, `bool` and `string` cannot be declared. A field or a
+  parameter is declared once in its record, variant or function.
+- **Locals** are parameters, `let` and `var` names, a `for`'s variable and a pattern's names. A
+  local is in scope from the statement after its own to the end of its block; a `for`'s variable
+  in the loop's body, a pattern's names in their arm. **A local never shadows a local**: it may not
+  have the name of a parameter or a local in scope. Blocks side by side may each have their own
+  `x`, and a local may hide a function, a record, a variant or a module. A name is looked up among
+  the locals first.
+
+### Types
+
+- `i64`, `f64`, `bool`, `string`, `[T; n]` with `n` at most 2^24, records and sums. An alias stands
+  for its type and may not reach itself; a record or a sum may hold itself, so `type L = | End |
+  Link(v: i64, next: L)` is a list.
+- An integer literal is an `i64` and a float literal an `f64`. Nothing converts implicitly:
+  `f64(n)` makes an `f64` of an `i64` and `i64(x)` an `i64` of an `f64`, truncating toward zero.
+- **`()`** is the type of a function without `-> T`, of a call of one, and of an `if` without
+  `else`. It has no name in a program. `a..b` and `a..=b` are of a type with no name, a range of
+  `i64`s, which a `let` may hold and a `for` walk. `[]` fits an array of any type of length 0.
+- `[x; n]` takes an integer literal for `n`, since the length is part of the type.
+
+### Expressions
+
+| Operators | Operands | Result |
+| --- | --- | --- |
+| `+` | two `i64`s, two `f64`s or two `string`s, which it joins | the same |
+| `-` `*` `/` `%` | two `i64`s or two `f64`s | the same |
+| `<` `<=` `>` `>=` | two `i64`s, two `f64`s or two `string`s, by code point | `bool` |
+| `==` `!=` | two values of any one type | `bool` |
+| `&&` `\|\|` | two `bool`s; the right one is evaluated only when it decides | `bool` |
+| prefix `-`, `!` | an `i64` or an `f64`; a `bool` | the same |
+
+- **Equality is by value**: arrays, records and variants part by part, reals as IEEE 754 compares
+  them (`0.0 == -0.0`, and NaN equals nothing), and two ranges when they hold the same integers
+  (`0..3 == 0..=2`).
+- **A call** names a function, a record or a variant, `Point(x: 1.0, y: 2.0)`. Its arguments are
+  positional, then named; each parameter or field is given once, and every one is given. They are
+  evaluated in the order written.
+- `p.x` reads a record's field. A sum's fields are reached only through `match`.
+- **A block's value** is its last statement's, when that is an expression, and `()` otherwise; one
+  that ends in `return`, `break` or `continue` never finishes, and fits any type. An `if` with
+  `else` has its branches' type, which must be one; a `match` its arms'.
+- **Where a value is discarded**, as a statement, as the body of a function without `-> T` or of a
+  loop, an `if`'s or a `match`'s branches may have any types.
+- **An interpolation** takes any value but `()`, and writes an `i64` in decimal; an `f64` in the
+  fewest digits that read back as it, with `.0` where they would read as an integer, and as `inf`,
+  `-inf` or `NaN`; a `bool` as `true` or `false`; a string as its text, and inside an array, a
+  record or a variant as a literal, quoted; an array as `[1, 2]`; a record or a variant as
+  `Point(x: 1.0, y: 2.0)`, a variant without fields as its name; a range as `0..3` or `0..=3`.
+
+### Statements
+
+- `let` binds a name for good and `var` one that may be assigned. **An assignment's target is a
+  place**: a `var`, or an element or a field of one, to any depth, `g[i].ends[0].x = 1.0`. A
+  parameter, a `for`'s variable and a pattern's name cannot be assigned. A compound assignment
+  takes the operands its operator does, the target's type being the left one's.
+- An assignment evaluates the target's indices left to right, then the value, then, for a compound
+  one, the operator, and stores the result; an index outside the array is found at the store.
+- `while` takes a `bool`. `for` walks a range, its variable an `i64`, or an array, its variable each
+  element in turn; the range's ends or the array are evaluated once, before the first pass, and a
+  range to the largest `i64` ends there. `break` and `continue` act on the innermost loop, and
+  only inside one.
+- `return` takes a value of the function's result type, and none in a function without one. A
+  function with `-> T` has a body whose value fits `T`; a function without one discards its body's
+  value.
+
+### match
+
+- A pattern is `_`; a literal of the matched value's type; a name, which is a variant without fields
+  where a variant of that name is declared and otherwise binds the value; or `V(p, …)`, a variant
+  or a record with one pattern for each of its fields, in order.
+- **Every value must be covered.** The checker names one that is not, as a pattern:
+  `` this `match` does not cover every `Shape` value, such as `Rect(_, _)` ``. An `i64`, an `f64`
+  or a `string` is covered only by an arm that matches anything.
+- **An arm no value can reach is an error**: `this arm can never match`.
+- A real pattern compares with `==`: `0.0` matches `-0.0`, and nothing matches NaN.
+
+### Values
+
+Every value is copied. Assigning an array or a record, passing it or putting it in another makes a
+copy, and changing one never changes another: `var b = a` and then `b[0] = 9` leaves `a` as it was.
+
+### Runtime errors
+
+These stop the program with `file:line:column: runtime error: message` and status 1, after the
+output it had already written:
+
+- an `i64` result that does not fit, from `+`, `-`, `*`, `/` (the one quotient, of the smallest
+  `i64` by `-1`), prefix `-` or a compound assignment: `` integer overflow in `+` ``. `%` cannot
+  overflow: the smallest `i64` `% -1` is 0;
+- an `i64` divided by zero, by `/` or `%`: `division by zero`. An `f64` follows IEEE 754, so
+  `1.0 / 0.0` is `inf`;
+- an index outside the array, reported at the index: `index 3 is out of bounds for an array of
+  length 3`;
+- `i64(x)` of an `x` an `i64` cannot hold: `` `i64` cannot hold NaN ``;
+- calls nested more than 100,000 deep: `stack overflow: calls nested more than 100000 deep`.
+
+A `match` that no arm matches cannot happen in a checked program.
+
+### The command
+
+`kite run file.kite` checks a program and runs it, `kite check file.kite` only checks it, and
+`kite parse file.kite` prints its syntax tree. Each prints its mistakes and ends with status 1
+where there are any, and with status 2 when it is not given a command and one file.
+
 ## Decisions
 
-Each was made for this first stage, the syntax; the reason follows it.
+The first seventeen were made for the first stage, the syntax; the rest for the checker and the
+evaluator. The reason follows each.
 
 1. **Kite is interpreted** by a tree-walking interpreter: a checker, then an evaluator, then a
    `kite run`. The parser keeps every node's position for the checker's messages.
@@ -189,3 +316,45 @@ Each was made for this first stage, the syntax; the reason follows it.
     failure and its commit, skips to a resynchronisation point, and answers a value standing for the
     error. The library keeps that record private and offers no way to clear it, so recovery cannot
     be written with it as it is. Review with the user.
+18. **One file is one program, and `import` names a built-in module** (`io`, `math`). Importing
+    another Kite file would need a type from it to be named, and a type is a plain name in the
+    grammar, with no `module.Type`; growing the grammar for it is a later stage's choice. Review
+    with the user.
+19. **Output is `io.print` and `io.println`, taking a `string`**; interpolation turns any value into
+    one. A prelude `print` taking any value was the alternative; an import keeps the program's
+    dependencies visible, and one parameter type needs no overloading. The samples, which called
+    `print`, now import `io`.
+20. **A local never shadows a local**, but may hide a top-level name. Shadowing within a function,
+    `let x = x + 1` as a new `x`, was the alternative; refusing it makes every name in a function
+    mean one thing, and the error names the first declaration. Review with the user.
+21. **Variants are not qualified by their sum**, since a pattern's lone name is a variant
+    (decision 4) and `Shape.Circle` would need a grammar for qualified names. So one module's
+    variants have distinct names. An alias names a type only, and is not called: `Point(…)` builds
+    a record through its own name.
+22. **A discarded value is checked as wanting `()`**, and anything fits that, since no type a
+    program can write is `()`: so an `if` or a `match` used as a statement may have branches of
+    different types, and a function without `-> T` may end in any expression. Requiring `()`
+    there was the alternative; it would make `if c { x += 1 } else { log(x) }` an error whenever
+    `log` answers something.
+23. **Every value is immutable inside the evaluator**: an assignment to an element or a field
+    builds a new array or record, sharing the rest, and stores it in the variable. That is copying
+    every value, as the language says, without a copy at every `let`, call and return.
+24. **An assignment evaluates its target's indices, then its value**, left to right as written,
+    and checks the indices at the store; a compound assignment evaluates them once. Evaluating the
+    value first was the alternative; target first is the order the text reads in.
+25. **Two ranges are equal when they hold the same integers**, so every empty range equals every
+    other; equal bounds and kind was the alternative, under which `0..3 != 0..=2`.
+26. **An unreachable arm is an error**, as Kite has no warnings; an arm that can never match is a
+    mistake in the program as surely as a missing one.
+27. **Calls nest at most 100,000 deep**, the evaluator running on a thread of its own with a 4 GiB
+    stack (reserved, and used only as deep as the program goes), so the limit is Kite's runtime
+    error with a position rather than the host's stack overflow, which names no place. No limit
+    was the alternative. Review with the user if a deeper limit is wanted.
+28. **An array has at most 2^24 items**, checked where its length is written, so `[0; n]` cannot
+    ask the evaluator for more memory than a demo should take.
+29. **`i64(x)` of a real it cannot hold is a runtime error**, not a saturated or wrapped result:
+    NaN, the infinities and anything outside the `i64` range have no `i64` to be.
+30. **The checker's messages come in the order of the text**, sorted by position, whatever order
+    the checker found them in (it reads declarations before bodies).
+31. **Interpolating `()` is an error**: it has nothing to show, and an `if` without `else` inside
+    `{…}` is more likely a missing `else` than a wish to print `()`.

@@ -89,5 +89,8 @@ data Item
     FnDecl(name: string, params: List[Param], result: Option[TypeRef], body: Expr, at: Position)
     TypeDecl(name: string, definition: TypeDef, at: Position)
 
+// `import name`, at its keyword.
+data Import(name: string, at: Position)
+
 // A source file: its module's name, what it imports, and its declarations.
-data Module(name: string, imports: List[string], items: List[Item], at: Position)
+data Module(name: string, imports: List[Import], items: List[Item], at: Position)

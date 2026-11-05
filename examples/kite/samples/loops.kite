@@ -1,5 +1,7 @@
 module loops
 
+import io
+
 /* Factorials three ways: a loop, recursion, and a fold over a range.
    /* Block comments nest, so this one stays a comment. */ */
 
@@ -42,8 +44,8 @@ fn collatz(start: i64) -> i64 {
 
 fn main() {
     for n in 0..10 {
-        print("{n}! = {factorial(n)} = {recursive(n)}")
+        io.println("{n}! = {factorial(n)} = {recursive(n)}")
     }
-    print("odd numbers to 99 add up to {sumTo(99)}")
-    print("27 takes {collatz(27)} steps")
+    io.println("odd numbers to 99 add up to {sumTo(99)}")
+    io.println("27 takes {collatz(27)} steps")
 }

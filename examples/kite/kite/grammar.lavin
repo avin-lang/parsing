@@ -586,7 +586,7 @@ may begin a line: the declaration is still going.
 
 A file is its `module` line, its imports, and its declarations, each on lines of its own.
 
-    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(kw("import") ~! (dottedName <~ lineEnd) ^^ (match (_, n) -> n)) ~ rep(item <~ lineEnd) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports, items, at))
+    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(here ~ (kw("import") ~! (dottedName <~ lineEnd)) ^^ (match (at, (_, n)) -> Import(n, at))) ~ rep(item <~ lineEnd) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports, items, at))
 
 ## Running it
 

@@ -1,0 +1,65 @@
+module kite
+
+// The values a Kite program computes. They are immutable: an assignment to an element or a field
+// makes a new array or record and stores it in the variable, so a value, once bound, never changes
+// under another name, which is what copying every value means.
+data Value
+    IntV(value: long)
+    FloatV(value: real)
+    BoolV(value: bool)
+    StrV(value: string)
+    UnitV
+    RangeV(low: long, high: long, inclusive: bool)
+    ArrayV(items: Vector[Value])
+    RecordV(name: string, fields: Vector[Value])
+    VariantV(name: string, fields: Vector[Value])
+
+// The first and last integer of a range, or `None` for an empty one.
+rangeEnds(low: long, high: long, inclusive: bool) -> Option[(long, long)]
+    if inclusive then return if low <= high then Some((low, high)) else None
+    if low < high then Some((low, high - 1)) else None
+
+// Whether two values of one type are equal: numbers by value, as IEEE 754 compares reals; arrays,
+// records and variants part by part; ranges when they hold the same integers.
+valueEq(a: Value, b: Value) -> bool = (a, b) match
+    (IntV(x), IntV(y)) -> x == y
+    (FloatV(x), FloatV(y)) -> x == y
+    (BoolV(x), BoolV(y)) -> x == y
+    (StrV(x), StrV(y)) -> x == y
+    (UnitV, UnitV) -> true
+    (RangeV(l1, h1, i1), RangeV(l2, h2, i2)) -> rangeEnds(l1, h1, i1) == rangeEnds(l2, h2, i2)
+    (ArrayV(xs), ArrayV(ys)) -> allEq(xs, ys)
+    (RecordV(n, xs), RecordV(m, ys)) -> n == m && allEq(xs, ys)
+    (VariantV(n, xs), VariantV(m, ys)) -> n == m && allEq(xs, ys)
+    _ -> false
+
+private allEq(xs: Vector[Value], ys: Vector[Value]) -> bool
+    if xs.length() != ys.length() then return false
+    var i = 0
+    while i < xs.length()
+        if !valueEq(xs(i), ys(i)) then return false
+        i += 1
+    true
+
+// A value as interpolation writes it: a string as its text, and inside an array, a record or a
+// variant as a quoted literal; a record or a variant with its fields named.
+valueText(v: Value, p: Program, nested: bool) -> string = v match
+    IntV(x) -> s"$x"
+    FloatV(x) -> floatText(x)
+    BoolV(x) -> s"$x"
+    StrV(x) -> if nested then quoted(x) else x
+    UnitV -> "()"
+    RangeV(l, h, inclusive) -> if inclusive then s"$l..=$h" else s"$l..$h"
+    ArrayV(items) -> "[" + items.map(x -> valueText(x, p, true)).mkString(", ") + "]"
+    RecordV(n, fields) -> n + fieldsText(p.records.getOrElse(n, Vector.empty[Slot]()), fields, p)
+    VariantV(n, fields) ->
+        if fields.isEmpty() then n
+        else n + fieldsText(p.variants.get(n).map(s -> s.fields).getOrElse(Vector.empty[Slot]()), fields, p)
+
+private fieldsText(slots: Vector[Slot], fields: Vector[Value], p: Program) -> string
+    val parts = Buffer[string]()
+    var i = 0
+    for f in fields
+        parts.append(s"${slots(i).name}: ${valueText(f, p, true)}")
+        i += 1
+    "(" + parts.mkString(", ") + ")"
