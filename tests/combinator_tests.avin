@@ -204,6 +204,20 @@ filteredAndMapped()
     assertEq(all(said | ident, "x"), "x")
     assertEq(all(small | number ^^ (n -> s"large $n"), "420"), "large 420")
 
+@test("a value filter or ^? refuses is reported where it began, after the white space before it")
+refusedAfterWhiteSpace()
+    val small = number.^?(match n if n < 100 -> n, n -> s"number below 100, not $n")
+    assertEq(all(small, "  420"), "failure 1:3: expected number below 100, not 420, found '4'")
+    assertEq(all(small, "\n 420"), "failure 2:2: expected number below 100, not 420, found '4'")
+    assertEq(all(literal("(") ~> small, "( 420"), "failure 1:3: expected number below 100, not 420, found '4'")
+    val even = number.filter(n -> n % 2 == 0)
+    assertEq(all(even, "  7"), "failure 1:3: expected value the filter accepts, found '7'")
+    // The alternative still starts where the refused parser did, white space included.
+    assertEq(all(even | literal("7") ^^ (s -> s.toLongOption().getOrElse(0) + 1), " 7"), "8")
+    assertEq(all(even ||| number, "  7"), "7")
+    // A grammar that skips nothing reports at the value itself, which is where it started.
+    assertEq(shown(Exact.parseAll(even, "7")), "failure 1:1: expected value the filter accepts, found '7'")
+
 @test("||| keeps the longer of two matches, the first when they are as long")
 longest()
     val lt = literal("<") ^^^ "lt"

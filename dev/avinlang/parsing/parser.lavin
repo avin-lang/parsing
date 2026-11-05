@@ -192,9 +192,7 @@ With two arguments it is called with a dot: `p.^?(f, n -> s"$n is out of range")
                 run(input) match
                     Some(a) -> g(a) match
                         Some(b) -> Some(b)
-                        None ->
-                            input.offset = start
-                            input.fail(error(a))
+                        None -> refuse(input, start, error(a))
                     None -> None)
 
 `flatMap` lets what was read choose what is read next: a closing tag that must repeat the opening
@@ -227,9 +225,7 @@ went wrong, and the input is moved back there so an alternative can try the same
             val start = input.offset
             run(input) match
                 Some(a) if p(a) -> Some(a)
-                Some(_) ->
-                    input.offset = start
-                    input.fail("value the filter accepts")
+                Some(_) -> refuse(input, start, "value the filter accepts")
                 None -> None)
 
         // `filter(p)`.
@@ -272,6 +268,19 @@ such a failure is final.
             val r = run(input)
             if r is None && input.committed then input.reword(msg)
             r)
+
+A value that `filter` or `^?` refuses began after the white space its parser skipped, so that is
+where the failure is recorded, rather than at the space before it; the input still goes back to where
+the parser started.
+
+    // Fails, expecting `what` where the value read from `start` began, after the grammar's white space,
+    // with the input back at `start`.
+    private refuse[T](input: Input, start: int, what: string) -> Option[T]
+        input.offset = start
+        input.handleWhiteSpace()
+        input.expect(what)
+        input.offset = start
+        None
 
 ## Repetition
 
