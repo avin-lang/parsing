@@ -5,7 +5,7 @@ module kite
 // given; what only running can find, an overflow, an index out of bounds, a division by zero, it
 // reports as a runtime error at the place it happens, which stops the program.
 import avin.math
-import avin.threads.spawn
+import avin.threads.{Mutex, spawn}
 import dev.avinlang.parsing.Position
 
 // How deeply calls may nest before the program stops with a runtime error, and the stack the
@@ -30,13 +30,28 @@ data Step
     AtIndex(index: long, at: Position)
     AtField(index: int)
 
+// Where a running program's output goes, as it is written. The evaluator runs on a thread of its
+// own, so what it writes to is sendable.
+trait Output: Sendable
+    write(text: string)
+
+// Output kept as it is written, to be read once the program has finished: the text is guarded by a
+// mutex, since the evaluator's thread writes it and another reads it.
+class Captured(): Output
+    private val kept = Mutex(StringWriter())
+
+    override write(text: string) = kept.with(w -> w.write(text))
+
+    // Everything written so far.
+    text() -> string = kept.with(w -> w.text())
+
 // Runs a checked program's `main`, writing its output to `out`, and answers the runtime error that
 // stopped it, if one did. It runs on a thread of its own, whose stack holds `callLimit` calls.
-execute(p: Program, out: Writer) -> Option[Diagnostic]
+execute(p: Program, out: Output) -> Option[Diagnostic]
     val worker = spawn(() -> Interpreter(p, out, callLimit).run(), evaluatorStack)
     worker.join()
 
-class Interpreter(p: Program, out: Writer, limit: long)
+class Interpreter(p: Program, out: Output, limit: long)
     private var depth: long = 0
 
     run() -> Option[Diagnostic]

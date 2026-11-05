@@ -7,10 +7,10 @@
 //     avin run examples/kite -- run examples/kite/samples/geometry.kite
 import avin.fs
 import avin.process.{args, exit}
-import kite.{checkSource, parseSource, runSource}
+import kite.{Output, checkSource, parseSource, runSource}
 
-// Standard output, as a `Writer` the evaluator writes a program's output to.
-class Stdout(): Writer
+// Standard output, as the `Output` the evaluator writes a program's output to.
+class Stdout(): Output
     override write(text: string) = print(text)
 
 failed(lines: Vector[string])

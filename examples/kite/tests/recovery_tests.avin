@@ -4,7 +4,7 @@ module tests
 // resynchronises, a statement or an arm at its line's end or its block's `}`, a declaration at the
 // next line that begins `fn` or `type`, an import at its line's end, and reads on. What it could not
 // read stands in the tree as `(error)`.
-import kite.{checkSource, parseModule, parseSource, runSource, showModule}
+import kite.{Captured, checkSource, parseModule, parseSource, runSource, showModule}
 
 // A file's errors, one to a line, as `kite` prints them after the file's name.
 syntaxErrs(text: string) -> string = parseModule(text).errors().map(e -> s"$e").mkString("\n")
@@ -163,7 +163,7 @@ commands()
     checkSource("t.kite", broken) match
         Ok(_) -> assertEq("checked", "refused")
         Err(lines) -> assertEq(lines.mkString("\n"), brokenLines)
-    val w = StringWriter()
+    val w = Captured()
     assertEq(runSource("t.kite", broken, w).mkString("\n"), brokenLines)
     assertEq(w.text(), "")
     // A syntax error at the end of the file is the last line.

@@ -3,7 +3,7 @@ module tests
 // What the checker and the evaluator make of a program, each as one string the tests compare: the
 // checker's mistakes, one `line:column: message` to a line, or `ok`; a program's output followed by
 // its error lines.
-import kite.{checkModule, parseModule, runSource}
+import kite.{Captured, checkModule, parseModule, runSource}
 
 // The mistakes the checker finds in a whole program, or `ok`; each syntax error as `syntax …`, in
 // which case nothing is checked.
@@ -28,7 +28,7 @@ decls(text: string) -> string = errs(withMain(text))
 
 // What a whole program prints, then its mistakes or its runtime error, each line after the output.
 out(text: string) -> string
-    val w = StringWriter()
+    val w = Captured()
     val lines = runSource("t", text, w)
     w.text() + lines.map(l -> l + "\n").mkString("")
 

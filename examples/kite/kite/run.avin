@@ -24,7 +24,7 @@ checkSource(file: string, text: string) -> Result[Program, Vector[string]]
 
 // Runs a source text, writing its output to `out`; answers its mistakes, or the runtime error that
 // stopped it.
-runSource(file: string, text: string, out: Writer) -> Vector[string] = checkSource(file, text) match
+runSource(file: string, text: string, out: Output) -> Vector[string] = checkSource(file, text) match
     Err(lines) -> lines
     Ok(program) -> execute(program, out) match
         Some(d) -> Vector(s"$file:${d.at}: runtime error: ${d.message}")

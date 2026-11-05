@@ -15,8 +15,15 @@ open class Located(val kind: string): Positional
 // A subclass, which stores the position once, in its superclass.
 class Call(val name: string, val arity: int): Located("call")
 
-// An object conforming to Positional through its superclass.
+// An object conforming to Positional through its superclass. Its position is a `var` every thread
+// would share, so no parser yields it; it is positioned directly.
 object End: Located("end")
+
+// A node that already has a position.
+placed(text: string, at: Position) -> Node
+    val n = Node(text)
+    n.setPos(at)
+    n
 
 // A trait of its own beside Positional, each with a field.
 trait Tagged
@@ -164,9 +171,7 @@ positions()
 
 @test("positioned keeps a position the value already has, and sets one only where there is none")
 positionedOnce()
-    val first = Node("a")
-    first.setPos(Position(7, 3, 4))
-    assertEq(all(positioned(literal("a") ^^ (_ -> first)) ^^ (n -> n.where()), "  a"), "a@3:4")
+    assertEq(all(positioned(literal("a") ^^ (_ -> placed("a", Position(7, 3, 4)))) ^^ (n -> n.where()), "  a"), "a@3:4")
     assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.where()), "  a"), "a@1:3")
     assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.pos.isDefined()), "a"), "true")
     assertEq(Node("n").pos.isEmpty(), true)
@@ -193,8 +198,10 @@ positionalField()
 positionalShapes()
     val call = positioned(ident ^^ (f -> Call(f, 2))) ^^ (c -> s"${c.arity} ${c.describe()}")
     assertEq(all(call, "\n  f"), "2 call@2:3")
-    val keyword = positioned(literal("end") ^^ (_ -> End)) ^^ (e -> e.describe())
+    val keyword = positioned(literal("end") ^^ (_ -> Located("end"))) ^^ (e -> e.describe())
     assertEq(all(keyword, " end"), "end@1:2")
+    End.setPos(Position(1, 1, 2))
+    assertEq(End.describe(), "end@1:2")
     val counted = rep(positioned(ident ^^ (w -> Word(w)))) ^^ (ws -> ws.map(w -> s"${w.text}${w.tag()}").mkString(" "))
     assertEq(all(counted, "a b"), "a1@1:1 b1@1:3")
 

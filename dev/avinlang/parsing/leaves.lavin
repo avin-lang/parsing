@@ -76,7 +76,7 @@ same with the message worked out from the character that was refused, and `elem(
 `accept(c)` read the one character `c`.
 
     // One character `p` accepts, described as `kind` when there is none.
-    elem(kind: string, p: char -> bool) -> Parser[char] = Parser(input ->
+    elem(kind: string, @sendable p: char -> bool) -> Parser[char] = Parser(input ->
         if input.atEnd() then return input.fail(kind)
         val c = input.first()
         if !p(c) then return input.fail(kind)
@@ -98,7 +98,7 @@ same with the message worked out from the character that was refused, and `elem(
 
     // One character `p` accepts; where it refuses one, a failure expecting `err` of that character, and
     // at the end of the text one expecting `character`.
-    acceptIf(p: char -> bool, err: char -> string) -> Parser[char] = Parser(input ->
+    acceptIf(@sendable p: char -> bool, @sendable err: char -> string) -> Parser[char] = Parser(input ->
         if input.atEnd() then return input.fail("character")
         val c = input.first()
         if !p(c) then return input.fail(err(c))
@@ -110,19 +110,18 @@ character becomes a value in one step: `acceptMatch("digit", match c if c.isDigi
 `accept(expected, f)` is the same.
 
     // `f` of one character `f` is defined at, described as `expected` when there is none.
-    acceptMatch[U](expected: string, f: PartialFunction[char, U]) -> Parser[U]
-        val g = f.lift()
+    acceptMatch[U](expected: string, @sendable f: PartialFunction[char, U]) -> Parser[U]
         Parser(input ->
             if input.atEnd() then return input.fail(expected)
             val c = input.first()
-            g(c) match
+            f.lift()(c) match
                 Some(u) ->
                     input.offset += width(c)
                     Some(u)
                 None -> input.fail(expected))
 
     // `acceptMatch(expected, f)`.
-    accept[U](expected: string, f: PartialFunction[char, U]) -> Parser[U] = acceptMatch(expected, f)
+    accept[U](expected: string, @sendable f: PartialFunction[char, U]) -> Parser[U] =acceptMatch(expected, f)
 
 `acceptSeq` reads the given characters in order, and `accept` of a list is the same. A mismatch is
 reported at the character that differs.

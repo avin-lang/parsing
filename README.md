@@ -41,7 +41,7 @@ power(base: long, exponent: long) -> long
     result
 
 // An operator: the literal, yielding the function it applies.
-op(text: string, f: (long, long) -> long) -> Parser[(long, long) -> long] = literal(text) ^^^ f
+op(text: string, f: @sendable (long, long) -> long) -> Parser[(long, long) -> long] = literal(text) ^^^ f
 
 lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLongOption().getOrElse(0))
 
@@ -269,6 +269,12 @@ when the method is called, so a rule may not begin with itself, which would loop
 Each level of nesting is a few calls deep, so the depth a text can nest is bounded by the stack of
 the thread parsing it: a few thousand levels of parentheses on the main thread, more on a thread
 spawned with a larger stack.
+
+A grammar is sendable, so one held in a module-level value may be run by any thread. A parser holds
+a `@sendable` function, and every combinator takes its parsers and functions `@sendable`, so what a
+grammar captures is checked where it is written: an operator's function is `@sendable (long, long)
+-> long` in `op` above, and a parser cannot yield a mutable value it shares, such as an `object`
+with a `var`.
 
 ## Kite: a demo language
 

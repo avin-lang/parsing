@@ -2,7 +2,7 @@ module tests
 
 // What `kite parse`, `kite check` and `kite run` print, through the functions the command calls:
 // each mistake as `file:line:column: message`.
-import kite.{checkSource, parseSource, runSource}
+import kite.{Captured, checkSource, parseSource, runSource}
 
 @test("parse answers the tree, or the syntax error with the file's name")
 parseCommand()
@@ -19,9 +19,9 @@ checkCommand()
 
 @test("run writes the program's output, and answers its runtime error")
 runCommand()
-    val w = StringWriter()
+    val w = Captured()
     assertEq(runSource("r.kite", "module r\nimport io\nfn main() { io.println(\"hi\")\nlet a = [1]\nlet b = a[1] }", w), Vector("r.kite:5:11: runtime error: index 1 is out of bounds for an array of length 1"))
     assertEq(w.text(), "hi\n")
-    val v = StringWriter()
+    val v = Captured()
     assertEq(runSource("r.kite", "module r\nimport io\nfn main() { io.print(\"ok\") }", v), Vector.empty[string]())
     assertEq(v.text(), "ok")

@@ -135,7 +135,7 @@ the closing bracket. When something inside the brackets went wrong further on, t
 and it is reported as it is.
 
     // `inner` between `open` and `close`, with the position of `open`.
-    enclosed[T](open: string, inner: -> Parser[T], close: string) -> Parser[(Position, T)] =
+    enclosed[T](open: string, @sendable inner: -> Parser[T], close: string) -> Parser[(Position, T)] =
         (here <~ literal(open)).flatMap(at -> inner <~ closing(open, close, at) ^^ (v -> (at, v)))
 
     // The `close` that matches the `open` at `at`, which must be there.
@@ -146,7 +146,7 @@ A list in brackets separates its items with commas and may end with one, so that
 item to a line can end every line with a comma.
 
     // `p`s separated by commas, none included, with an optional comma after the last.
-    commaList[T](p: -> Parser[T]) -> Parser[List[T]] =
+    commaList[T](@sendable p: -> Parser[T]) -> Parser[List[T]] =
         opt(p ~ rep(literal(",") ~> p) <~ opt(literal(","))) ^^ (o -> listed(o))
 
     // The list a `commaList` read: the first item and the rest, or nothing.

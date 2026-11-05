@@ -2,21 +2,19 @@ module tests
 
 // Every combinator takes the parsers it is given by name: an operand is made the first time the
 // parser that combinator made runs, not when the combinator is called, and it is made once.
+import avin.threads.Mutex
 import dev.avinlang.parsing.{Parser, chainl1, chainr1, commit, guard, literal, log, not, opt, parseAll, phrase, positioned, rep, rep1, rep1sep, repN, repsep}
 
-// The names of the operands made so far.
-val made = Buffer[string]()
+// The names of the operands made so far. An operand is made inside a parser, which may run on any
+// thread, so the names are kept under a mutex.
+val made = Mutex(Buffer[string]())
 
 // `p`, noting under `name` that the expression giving it was evaluated.
 noted[T](name: string, p: Parser[T]) -> Parser[T]
-    made.addOne(name)
+    made.with(names -> names.addOne(name))
     p
 
-madeCount(name: string) -> int
-    var n = 0
-    for m in made
-        if m == name then n += 1
-    n
+madeCount(name: string) -> int = made.with(names -> names.count(m -> m == name))
 
 // `p` has not made the operand `name` yet, makes it on its first run, and keeps it for the next.
 madeOnce[T](name: string, p: Parser[T], text: string)
