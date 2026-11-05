@@ -6,26 +6,26 @@ module kite
 // A string in Kite's own spelling: quoted, with its quotes, backslashes, braces and control
 // characters escaped.
 quoted(text: string) -> string
-    val out = StringWriter()
-    out.write("\"")
-    for c in text.chars()
-        if c == '"' then out.write("\\\"")
-        elif c == '\\' then out.write("\\\\")
-        elif c == '{' then out.write("\\{")
-        elif c == '}' then out.write("\\}")
-        elif c == '\n' then out.write("\\n")
-        elif c == '\t' then out.write("\\t")
-        elif c == '\r' then out.write("\\r")
-        elif c == '\u{0}' then out.write("\\0")
-        else out.write(s"$c")
-    out.write("\"")
-    out.text()
+    val body = text.chars().map(escaped).mkString("")
+    s"\"$body\""
+
+// How a string writes the character `c`.
+escaped(c: char) -> string
+escaped('"') = "\\\""
+escaped('\\') = "\\\\"
+escaped('{') = "\\{"
+escaped('}') = "\\}"
+escaped('\n') = "\\n"
+escaped('\t') = "\\t"
+escaped('\r') = "\\r"
+escaped('\u{0}') = "\\0"
+escaped(c) = s"$c"
 
 // A float as written, always with a point or an exponent so that it never reads as an integer;
 // the infinities and NaN as `inf`, `-inf` and `NaN`.
 floatText(x: real) -> string
     val t = s"$x"
-    if t.contains(".") || t.contains("e") || t.contains("E") || t.contains("n") || t.contains("N") then t else t + ".0"
+    if t.contains(".") || t.contains("e") || t.contains("E") || t.contains("n") || t.contains("N") then t else s"${t}.0"
 
 showType(t: TypeRef) -> string = t match
     NamedType(n, _) -> n
@@ -50,7 +50,7 @@ private showArg(a: Arg) -> string = a.name match
     None -> show(a.value)
 
 // Forms after a head, each preceded by a space.
-private tail(forms: List[string]) -> string = forms.map(f -> " " + f).mkString("")
+private tail(forms: List[string]) -> string = forms.map(f -> s" $f").mkString("")
 
 show(e: Expr) -> string = e match
     IntLit(v, _) -> s"$v"
@@ -115,10 +115,6 @@ showItem(i: Item) -> string = i match
 
 // A module, one form to a line: the header, each import, each declaration.
 showModule(m: Module) -> string
-    val out = StringWriter()
-    out.write(s"(module ${m.name})")
-    for i in m.imports
-        out.write(s"\n(import ${i.name})")
-    for item in m.items
-        out.write("\n" + showItem(item))
-    out.text()
+    val header = s"(module ${m.name})"
+    val forms = m.imports.map(i -> s"(import ${i.name})") ++ m.items.map(showItem)
+    (header :: forms).mkString("\n")

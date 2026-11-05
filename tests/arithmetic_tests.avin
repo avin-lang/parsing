@@ -7,10 +7,8 @@ import avin.threads.spawn
 
 // `base` multiplied by itself `exponent` times.
 power(base: long, exponent: long) -> long
-    var result: long = 1
-    for _ in 0..<exponent
-        result *= base
-    result
+power(_, n <= 0) = 1
+power(base, n + 1) = base * power(base, n)
 
 // An operator: the literal, yielding the function it applies.
 op(text: string, f: @sendable (long, long) -> long) -> Parser[(long, long) -> long] = literal(text) ^^^ f

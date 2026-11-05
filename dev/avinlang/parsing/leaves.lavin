@@ -23,9 +23,11 @@ The input is UTF-8, so moving past a character means moving past the bytes that 
 one and four.
 
     // The number of bytes UTF-8 encodes `c` in.
-    private width(c: char) -> int
-        val code = int(c)
-        if code < 0x80 then 1 elif code < 0x800 then 2 elif code < 0x10000 then 3 else 4
+    private width(c: char) -> int = int(c) match
+        code < 0x80 -> 1
+        code < 0x800 -> 2
+        code < 0x10000 -> 3
+        _ -> 4
 
 A name is what most programming languages call an identifier: a letter or `_` to begin, then
 letters, digits and `_`.
@@ -42,8 +44,11 @@ Numbers and strings are made of ASCII punctuation and digits, which can be teste
 without decoding a character. `byteIs` does that, and is false at the end of the text rather than
 trapping.
 
-    // Whether the byte at `at` is the ASCII character `b`.
-    private byteIs(input: Input, at: int, b: int) -> bool = at < input.length && int(input.source.byteAt(at)) == b
+    // The byte at `at` as a character: the character itself where it is ASCII.
+    private asciiAt(input: Input, at: int) -> char = char(int(input.source.byteAt(at)))
+
+    // Whether the byte at `at` is the ASCII character `c`.
+    private byteIs(input: Input, at: int, c: char) -> bool = at < input.length && asciiAt(input, at) == c
 
     // Moves past the characters `p` accepts.
     private skip(input: Input, p: char -> bool)
@@ -55,9 +60,7 @@ trapping.
     // Moves past the ASCII digits, answering how many there were.
     private skipDigits(input: Input) -> int
         val start = input.offset
-        while input.offset < input.length
-            val b = int(input.source.byteAt(input.offset))
-            if b < 0x30 || b > 0x39 then break
+        while !input.atEnd() && '0' <= asciiAt(input, input.offset) <= '9'
             input.offset += 1
         input.offset - start
 
@@ -183,7 +186,7 @@ A whole number is an optional `-` and decimal digits.
     lazy val wholeNumber: Parser[string] = Parser(input ->
         if !input.handleWhiteSpace() then return None
         val start = input.offset
-        if byteIs(input, start, 0x2d) then input.offset += 1
+        if byteIs(input, start, '-') then input.offset += 1
         if skipDigits(input) == 0
             input.offset = start
             return input.fail("whole number")
@@ -204,7 +207,7 @@ A decimal number has digits, a `.` and digits, with one side of the point allowe
     private unsignedDecimal(input: Input) -> bool
         val start = input.offset
         val whole = skipDigits(input)
-        if byteIs(input, input.offset, 0x2e)
+        if byteIs(input, input.offset, '.')
             input.offset += 1
             if skipDigits(input) == 0 && whole == 0
                 input.offset = start
@@ -223,16 +226,16 @@ included, for the grammar to interpret.
     lazy val floatingPointNumber: Parser[string] = Parser(input ->
         if !input.handleWhiteSpace() then return None
         val start = input.offset
-        if byteIs(input, start, 0x2d) then input.offset += 1
+        if byteIs(input, start, '-') then input.offset += 1
         if !unsignedDecimal(input)
             input.offset = start
             return input.fail("floating-point number")
-        if byteIs(input, input.offset, 0x65) || byteIs(input, input.offset, 0x45)
+        if byteIs(input, input.offset, 'e') || byteIs(input, input.offset, 'E')
             val e = input.offset
             input.offset += 1
-            if byteIs(input, input.offset, 0x2b) || byteIs(input, input.offset, 0x2d) then input.offset += 1
+            if byteIs(input, input.offset, '+') || byteIs(input, input.offset, '-') then input.offset += 1
             if skipDigits(input) == 0 then input.offset = e
-        if byteIs(input, input.offset, 0x66) || byteIs(input, input.offset, 0x46) || byteIs(input, input.offset, 0x64) || byteIs(input, input.offset, 0x44)
+        if byteIs(input, input.offset, 'f') || byteIs(input, input.offset, 'F') || byteIs(input, input.offset, 'd') || byteIs(input, input.offset, 'D')
             input.offset += 1
         Some(input.source.slice(start, input.offset)))
 
@@ -250,33 +253,34 @@ before it. A wrong escape is reported at the character after the `\`.
     lazy val stringLiteral: Parser[string] = Parser(input ->
         if !input.handleWhiteSpace() then return None
         val start = input.offset
-        if !byteIs(input, start, 0x22) then return input.fail("string")
+        if !byteIs(input, start, '"') then return input.fail("string")
         input.offset += 1
         loop
             if input.atEnd() then return input.fail("`\"`")
-            val b = int(input.source.byteAt(input.offset))
-            if b == 0x22
+            val c = asciiAt(input, input.offset)
+            if c == '"'
                 input.offset += 1
                 return Some(input.source.slice(start, input.offset))
-            if b < 0x20 || b == 0x7f then return input.fail("`\"`")
+            if c < ' ' || c == '\u{7f}' then return input.fail("`\"`")
             input.offset += 1
-            if b == 0x5c then escape(input)?)
+            if c == '\\' then escape(input)?)
 
     // Moves past the escape after a `\`.
     private escape(input: Input) -> Option[unit]
         if input.atEnd() then return input.fail("escape")
-        val b = int(input.source.byteAt(input.offset))
-        b match
-            0x22 | 0x27 | 0x5c | 0x62 | 0x66 | 0x6e | 0x72 | 0x74 ->
+        asciiAt(input, input.offset) match
+            '"' | '\'' | '\\' | 'b' | 'f' | 'n' | 'r' | 't' ->
                 input.offset += 1
                 Some(())
-            0x75 ->
+            'u' ->
                 input.offset += 1
                 for _ in 0..<4
-                    if input.atEnd() || !isHexDigit(int(input.source.byteAt(input.offset))) then return input.fail("hexadecimal digit")
+                    if input.atEnd() || !isHexDigit(asciiAt(input, input.offset)) then return input.fail("hexadecimal digit")
                     input.offset += 1
                 Some(())
             _ -> input.fail("escape")
 
-    // Whether the byte `b` is an ASCII hexadecimal digit.
-    private isHexDigit(b: int) -> bool = int('0') <= b <= int('9') || int('a') <= b <= int('f') || int('A') <= b <= int('F')
+    // Whether `c` is an ASCII hexadecimal digit.
+    private isHexDigit(c: char) -> bool = c match
+        '0'..'9' | 'a'..'f' | 'A'..'F' -> true
+        _ -> false

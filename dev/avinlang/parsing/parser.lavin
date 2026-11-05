@@ -361,10 +361,7 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
     rep1sep[T, S](@sendable p: -> Parser[T], @sendable q: -> Parser[S]) -> Parser[List[T]]
         val v = later(p)
         val s = later(q)
-        Parser(input ->
-            v.run(input) match
-                Some(a) -> separated(v, s, input, a)
-                None -> None)
+        Parser(input -> v.run(input).flatMap(a -> separated(v, s, input, a)))
 
 Both loops have the same shape: remember where the next run starts, run, and on failure go back
 there and stop. They stop also when a run read nothing. A committed failure is not a stop but a

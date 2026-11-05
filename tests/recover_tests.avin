@@ -12,11 +12,7 @@ told[T: Display](r: ParseResult[T]) -> string
     val head = r match
         Success(v, _) -> s"$v"
         _ -> "failed"
-    val out = StringWriter()
-    out.write(head)
-    for e in r.errors()
-        out.write(s" | $e")
-    out.text()
+    (head :: r.errors().map(e -> s"$e")).mkString(" | ")
 
 // `parseAll(p, text)`, told.
 allTold[T: Display](p: Parser[T], text: string) -> string = told(parseAll(p, text))

@@ -65,11 +65,8 @@ class Interpreter(p: Program, out: Output, limit: long)
     private callFunction(f: Function, args: Vector[Value], at: Position) -> Result[Value, Halt]
         if depth >= limit then return fail(s"stack overflow: calls nested more than $limit deep", at)
         depth += 1
-        var env: List[Cell] = Nil
-        var i = 0
-        for a in args
-            env = Cons(Cell(f.params(i).name, a), env)
-            i += 1
+        // The last parameter is innermost, as if each were bound in turn.
+        val env = f.params.zip(args).map((s, a) -> Cell(s.name, a)).reverse().toList()
         val r = eval(f.body, env)
         depth -= 1
         r match
@@ -104,10 +101,7 @@ class Interpreter(p: Program, out: Output, limit: long)
         ArrayRepeat(item, count, _) ->
             val v = eval(item, env)?
             val n = integer(eval(count, env)?)
-            val b = Buffer[Value]()
-            for _ in 0..<n
-                b.append(v)
-            Ok(ArrayV(b.toVector()))
+            Ok(ArrayV(Vector.fill(int(n), v)))
         Unary(op, x, at) -> eval(x, env)? match
             BoolV(b) -> Ok(BoolV(!b))
             IntV(k) -> if k == long.MinValue then fail("integer overflow in `-`", at) else Ok(IntV(-k))
@@ -143,18 +137,13 @@ class Interpreter(p: Program, out: Output, limit: long)
             if yes
                 val v = eval(t, env)?
                 if o.isEmpty() then Ok(UnitV) else Ok(v)
-            else o match
-                Some(x) -> eval(x, env)
-                None -> Ok(UnitV)
+            else o.map(x -> eval(x, env)).getOrElse(Ok(UnitV))
         Match(x, arms, at) ->
             val v = eval(x, env)?
             for arm in arms
                 val binds = Buffer[Cell]()
                 if matches(arm.pattern, v, binds)
-                    var scope = env
-                    for c in binds
-                        scope = Cons(c, scope)
-                    return eval(arm.body, scope)
+                    return eval(arm.body, binds.foldLeft(env, (scope, c) -> Cons(c, scope)))
             fail("no arm of the `match` matches", at)
 
     private integer(v: Value) -> long = v match
@@ -165,8 +154,8 @@ class Interpreter(p: Program, out: Output, limit: long)
 
     private element(target: Value, k: long, at: Position) -> Result[Value, Halt] = target match
         ArrayV(items) ->
-            if k < 0 || k >= long(items.length()) then fail(s"index $k is out of bounds for an array of length ${items.length()}", at)
-            else Ok(items(int(k)))
+            if 0 <= k < long(items.length()) then Ok(items(int(k)))
+            else fail(s"index $k is out of bounds for an array of length ${items.length()}", at)
         v -> Ok(v)
 
     private block(stmts: List[Stmt], env: List[Cell]) -> Result[Value, Halt]
@@ -316,11 +305,14 @@ class Interpreter(p: Program, out: Output, limit: long)
                 if (x == -1 && y == long.MinValue) || (y == -1 && x == long.MinValue) then return fail(overflow, at)
                 val r = x *% y
                 if x == -1 || y == -1 || r / y == x then Ok(IntV(r)) else fail(overflow, at)
-            "/" ->
-                if y == 0 then fail("division by zero", at)
-                elif x == long.MinValue && y == -1 then fail(overflow, at)
-                else Ok(IntV(x / y))
-            "%" -> if y == 0 then fail("division by zero", at) elif y == -1 then Ok(IntV(0)) else Ok(IntV(x % y))
+            "/" -> y match
+                0 -> fail("division by zero", at)
+                -1 if x == long.MinValue -> fail(overflow, at)
+                _ -> Ok(IntV(x / y))
+            "%" -> y match
+                0 -> fail("division by zero", at)
+                -1 -> Ok(IntV(0))
+                _ -> Ok(IntV(x % y))
             "<" -> Ok(BoolV(x < y))
             "<=" -> Ok(BoolV(x <= y))
             ">" -> Ok(BoolV(x > y))
@@ -343,17 +335,11 @@ class Interpreter(p: Program, out: Output, limit: long)
             _ -> false
 
     private all(subs: List[Pattern], fields: Vector[Value], binds: Buffer[Cell]) -> bool
-        var i = 0
-        for s in subs
-            if !matches(s, fields(i), binds) then return false
-            i += 1
-        true
+        subs.zip(fields).forall((s, f) -> matches(s, f, binds))
 
     // The values of a call's arguments in the order of the parameters or fields they are for.
     private ordered(params: Vector[Slot], args: List[Arg], env: List[Cell]) -> Result[Vector[Value], Halt]
-        val slots = Buffer[Value]()
-        for _ in params
-            slots.append(UnitV)
+        val slots = Array.fill[Value](params.length(), UnitV)
         var position = 0
         for a in args
             val v = eval(a.value, env)?
@@ -402,7 +388,7 @@ class Interpreter(p: Program, out: Output, limit: long)
             _ -> 0.0
         (md, n) match
             ("io", "print") -> out.write(text)
-            ("io", "println") -> out.write(text + "\n")
+            ("io", "println") -> out.write(s"$text\n")
             ("math", "abs") -> return Ok(FloatV(math.abs(x)))
             ("math", "sqrt") -> return Ok(FloatV(math.sqrt(x)))
             _ -> return fail(s"no function `$md.$n`", at)

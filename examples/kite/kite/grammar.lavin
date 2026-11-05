@@ -67,11 +67,7 @@ holds an unclosed comment has reported that, and the question fails with it.
         input.handleWhiteSpace()
         val end = input.offset
         input.offset = start
-        var i = start
-        while i < end
-            if int(input.source.byteAt(i)) == 0x0a then return true
-            i += 1
-        false
+        (start..<end).exists(i -> int(input.source.byteAt(i)) == int('\n'))
 
     // Succeeds, reading nothing, where the next token is on the same line.
     lazy val sameLine: Parser[unit] = Parser(input -> if lineBreakAhead(input) then None else Some(()))
@@ -228,13 +224,13 @@ and no piece is worth reporting on its own.
         if whole == 0 then return input.fail("number")
         input.offset += whole
         var isFloat = false
-        if byteOf(text, input.offset) == 0x2e && digitAt(text, input.offset + 1)
+        if byteOf(text, input.offset) == int('.') && digitAt(text, input.offset + 1)
             input.offset += 1
             input.offset += skipDigits(text, input.offset)
             isFloat = true
-        if byteOf(text, input.offset) == 0x65 || byteOf(text, input.offset) == 0x45
+        if byteOf(text, input.offset) == int('e') || byteOf(text, input.offset) == int('E')
             var i = input.offset + 1
-            if byteOf(text, i) == 0x2b || byteOf(text, i) == 0x2d then i += 1
+            if byteOf(text, i) == int('+') || byteOf(text, i) == int('-') then i += 1
             val digits = skipDigits(text, i)
             if digits > 0
                 input.offset = i + digits
@@ -288,10 +284,8 @@ value. Anything else after a `\` is an error at that character, and final.
 
     // The character the hex digits `ds` name, which must be a Unicode scalar value.
     scalar(ds: List[int]) -> Parser[string]
-        var code = 0
-        for d in ds
-            if code > 0x10ffff then break
-            code = code * 16 + d
+        // Once past the largest scalar value the code stops growing, so any number of digits fits in an `int`.
+        val code = ds.foldLeft(0, (code, d) -> if code > 0x10ffff then code else code * 16 + d)
         if ds.length() > 6 || code > 0x10ffff || 0xd800 <= code <= 0xdfff then err[string]("Unicode scalar value (at most 10FFFF, and not D800 to DFFF) in `\\u{…}`")
         else success(s"${char(code)}")
 
@@ -311,26 +305,9 @@ where they stopped.
 
     // The pieces of a string with neighbouring text joined, so `"a\tb"` is one piece of text.
     merged(parts: List[StrPart]) -> List[StrPart]
-        val out = Buffer[StrPart]()
-        var text: Option[StringWriter] = None
-        for p in parts
-            p match
-                Text(t) -> text match
-                    Some(w) -> w.write(t)
-                    None ->
-                        val w = StringWriter()
-                        w.write(t)
-                        text = Some(w)
-                Interp(_) ->
-                    text match
-                        Some(w) -> out.addOne(Text(w.text()))
-                        None -> ()
-                    text = None
-                    out.addOne(p)
-        text match
-            Some(w) -> out.addOne(Text(w.text()))
-            None -> ()
-        out.toList()
+    merged(Text(a) :: Text(b) :: rest) = merged(Text(a + b) :: rest)
+    merged(p :: rest) = p :: merged(rest)
+    merged(Nil) = Nil
 
     // A string literal, with interpolation.
     lazy val stringLit: Parser[Expr] = quotedWith(textChunk | escape | interpolation) ^^ (match (at, parts) -> StrLit(parts, at))
@@ -642,9 +619,9 @@ nothing when the line of its error begins one.
     // here.
     lazy val lineStart: Parser[unit] = Parser(input ->
         var i = input.offset - 1
-        while i >= 0 && (int(input.source.byteAt(i)) == 0x20 || int(input.source.byteAt(i)) == 0x09)
+        while i >= 0 && (int(input.source.byteAt(i)) == int(' ') || int(input.source.byteAt(i)) == int('\t'))
             i -= 1
-        if i < 0 || int(input.source.byteAt(i)) == 0x0a then Some(()) else None)
+        if i < 0 || int(input.source.byteAt(i)) == int('\n') then Some(()) else None)
 
     // Succeeds, reading nothing, at the start of a line after the one holding `at`.
     laterLine(at: Position) -> Parser[unit] = lineStart ~> Parser(input -> if at.offset < input.offset then Some(()) else None)

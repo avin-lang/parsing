@@ -45,16 +45,12 @@ valueText(v: Value, p: Program, nested: bool) -> string = v match
     StrV(x) -> if nested then quoted(x) else x
     UnitV -> "()"
     RangeV(l, h, inclusive) -> if inclusive then s"$l..=$h" else s"$l..$h"
-    ArrayV(items) -> "[" + items.map(x -> valueText(x, p, true)).mkString(", ") + "]"
-    RecordV(n, fields) -> n + fieldsText(p.records.getOrElse(n, Vector.empty[Slot]()), fields, p)
+    ArrayV(items) -> s"[${items.map(x -> valueText(x, p, true)).mkString(", ")}]"
+    RecordV(n, fields) -> s"$n${fieldsText(p.records.getOrElse(n, Vector.empty[Slot]()), fields, p)}"
     VariantV(n, fields) ->
         if fields.isEmpty() then n
-        else n + fieldsText(p.variants.get(n).map(s -> s.fields).getOrElse(Vector.empty[Slot]()), fields, p)
+        else s"$n${fieldsText(p.variants.get(n).map(s -> s.fields).getOrElse(Vector.empty[Slot]()), fields, p)}"
 
 private fieldsText(slots: Vector[Slot], fields: Vector[Value], p: Program) -> string
-    val parts = Buffer[string]()
-    var i = 0
-    for f in fields
-        parts.append(s"${slots(i).name}: ${valueText(f, p, true)}")
-        i += 1
-    "(" + parts.mkString(", ") + ")"
+    val parts = slots.zip(fields).map((s, f) -> s"${s.name}: ${valueText(f, p, true)}")
+    s"(${parts.mkString(", ")})"
