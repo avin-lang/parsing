@@ -2,8 +2,23 @@ module tests
 
 // White space belongs to the grammar: a `RegexParsers` says what it is and whether it is skipped,
 // and its `parse` and `parseAll` skip it before every token, at the end, and before a positioned
-// value. Nothing the white space parser expects is reported, and a commit inside it commits nothing.
-import dev.avinlang.parsing.{Parser, RegexParsers, elem, ident, literal, log, positioned, rep, wholeNumber}
+// value. Nothing the white space parser expects is reported, but a commit inside it is an error of
+// the text: an unclosed comment is reported where it begins.
+import dev.avinlang.parsing.{Parser, RegexParsers, acceptSeq, elem, err, guard, ident, literal, log, not, opt, positioned, rep, wholeNumber}
+
+// Block comments as white space, a `/*` never closed an error where it begins.
+object Blocky: RegexParsers
+    override whiteSpace() -> Parser[unit] = rep(elem("space", c -> c.isWhitespace()) ^^^ () | closedComment | unclosedComment) ^^^ ()
+
+lazy val closedComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(not(acceptSeq("*/".chars())) ~> elem("comment", c -> true)) ~ acceptSeq("*/".chars()) ^^^ ()
+
+lazy val unclosedComment: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err[unit](commentOpen)
+
+val commentOpen = "`*/` to close the comment that begins here"
+
+// As `Strict`, below, with the error reworded.
+object Worded: RegexParsers
+    override whiteSpace() -> Parser[unit] = rep(literal(" ") | (literal("~~") ~! literal("!")).withErrorMessage("`!` after `~~`") ^^^ " ") ^^^ ()
 
 // Comments run from `#` to the end of the line, and count as white space.
 object Commented: RegexParsers
@@ -42,11 +57,38 @@ spaced()
     assertEq(shown(Spaced.parseAll(literal("a") ~ literal("b"), "a\nb")), "failure 1:2: expected `b`, found '\\n'")
     assertEq(shown(Spaced.parseAll(rep(positioned(ident ^^ (n -> Node(n)))) ^^ (xs -> xs.map(n -> n.where()).mkString(" ")), "a  bb c")), "a@1:1 bb@1:4 c@1:7")
 
-@test("a commit or a failure inside the white space parser commits and reports nothing")
+@test("a failure inside the white space parser reports nothing")
 quietWhiteSpace()
     assertEq(shown(Strict.parseAll(literal("a") ~ literal("b"), "a ~~! b")), "(a, b)")
-    assertEq(shown(Strict.parseAll(literal("a") ~ literal("b") | literal("a") ~ literal("~~c"), "a~~c")), "(a, ~~c)")
     assertEq(shown(Strict.parseAll(literal("a") ~ literal("b"), "a x")), "failure 1:3: expected `b`, found 'x'")
+    assertEq(shown(Blocky.parseAll(literal("a") ~ literal("b"), "a /* x */ b")), "(a, b)")
+    assertEq(shown(Blocky.parseAll(literal("a") ~ literal("b"), "a /* x */ c")), "failure 1:11: expected `b`, found 'c'")
+
+@test("a commit inside the white space parser is an error of the text, where white space last expected something")
+whiteSpaceErrors()
+    assertEq(shown(Strict.parseAll(literal("a") ~ literal("b") | literal("a") ~ literal("~~c"), "a~~c")), "error 1:4: expected `!`, found 'c'")
+    assertEq(shown(Strict.parseAll(literal("a") ~ literal("b"), "a ~~ b")), "error 1:5: expected `!`, found ' '")
+    // `err` reports its message where it stands: an unclosed comment where it begins.
+    assertEq(shown(Blocky.parseAll(literal("a") ~ literal("b"), "a /* x")), s"error 1:3: expected $commentOpen, found '/'")
+    assertEq(shown(Blocky.parseAll(literal("a") ~ literal("b"), "a\n  /* x\n  b")), s"error 2:3: expected $commentOpen, found '/'")
+    assertEq(shown(Blocky.parseAll(literal("a"), "/* x")), s"error 1:1: expected $commentOpen, found '/'")
+    // At the end, after the last token.
+    assertEq(shown(Blocky.parseAll(literal("a"), "a /*")), s"error 1:3: expected $commentOpen, found '/'")
+    // Before every kind of token, and before a positioned value.
+    assertEq(shown(Blocky.parseAll(ident, "/* x")), s"error 1:1: expected $commentOpen, found '/'")
+    assertEq(shown(Blocky.parseAll(wholeNumber, " /* 1")), s"error 1:2: expected $commentOpen, found '/'")
+    assertEq(shown(Blocky.parseAll(positioned(ident ^^ (n -> Node(n))) ^^ (n -> n.where()), "/*")), s"error 1:1: expected $commentOpen, found '/'")
+    // The error is final: no alternative reads the text instead, and no option or repetition hides it.
+    assertEq(shown(Blocky.parseAll(literal("a") ~ literal("b") | literal("a") ~ literal("c"), "a /* x")), s"error 1:3: expected $commentOpen, found '/'")
+    assertEq(shown(Blocky.parseAll(literal("a") ~ opt(literal("b")), "a /* x")), s"error 1:3: expected $commentOpen, found '/'")
+    assertEq(shown(Blocky.parseAll(rep(ident), "a b /* x")), s"error 1:5: expected $commentOpen, found '/'")
+    // Nor can a token that the text holds at the comment read it.
+    assertEq(shown(Blocky.parseAll(literal("a") ~ opt(literal("/")), "a/* x")), s"error 1:2: expected $commentOpen, found '/'")
+    // withErrorMessage rewords it.
+    assertEq(shown(Worded.parseAll(literal("a") ~ literal("b"), "a~~c")), "error 1:4: expected `!` after `~~`, found 'c'")
+    // A look ahead commits nothing and records nothing, white space included.
+    assertEq(shown(Blocky.parseAll(literal("a") <~ not(literal("b")) ~ literal("c"), "a c")), "(a, c)")
+    assertEq(shown(Blocky.parseAll(not(literal("b")) ~> literal("a"), "/* x")), s"error 1:1: expected $commentOpen, found '/'")
 
 @test("log passes the value through")
 logged()

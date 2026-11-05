@@ -1,0 +1,175 @@
+module tests
+
+// Recovering from errors: `recover` keeps a failure as an error, clears the record of what was
+// expected and the commit, skips with its resynchronisation, and answers a value standing for the
+// error; the result's `errors()` lists every error in order, then the failure the parse ended in.
+// Recovery always moves on, leaves the end of the text to the rules around it, drops the errors of
+// an abandoned alternative, and recovers nothing inside a look ahead or white space.
+import dev.avinlang.parsing.{ParseResult, Parser, Position, RegexParsers, Success, acceptSeq, elem, err, failure, guard, ident, literal, not, opt, parseAll, recover, rep, success}
+
+// A result's value, or `failed`, then each error it lists as `line:column: message`.
+told[T: Display](r: ParseResult[T]) -> string
+    val head = r match
+        Success(v, _) -> s"$v"
+        _ -> "failed"
+    val out = StringWriter()
+    out.write(head)
+    for e in r.errors()
+        out.write(s" | $e")
+    out.text()
+
+// `parseAll(p, text)`, told.
+allTold[T: Display](p: Parser[T], text: string) -> string = told(parseAll(p, text))
+
+// A statement: a name and `;`.
+lazy val stmt: Parser[string] = ident <~ literal(";")
+
+// `let`, committed, then a name and `;`.
+lazy val letStmt: Parser[string] = (literal("let") ~! ident <~ literal(";")) ^^ (match (_, n) -> n)
+
+// Up to and including the next `;`, or to the end of the text.
+lazy val toSemi: Parser[unit] = rep(elem("text", c -> c != ';')) ~ opt(elem(';')) ^^^ ()
+
+// What a recovered statement stands for: the error's position in angle brackets.
+marked(msg: string, at: Position) -> string = s"<$at>"
+
+lazy val stmts: Parser[List[string]] = rep(recover(stmt, toSemi, marked))
+
+// A block in braces of statements that recover is itself a statement: an error inside a block
+// resumes at its next statement, and a block that cannot be read resumes after the next `;`.
+lazy val nestedStmt: Parser[string] = recover(block | stmt, toSemi, marked)
+
+lazy val block: Parser[string] = literal("{") ~! (rep(not(literal("}")) ~> nestedStmt) <~ literal("}")) ^^ (match (_, ss) -> s"{${ss.mkString(" ")}}")
+
+lazy val program: Parser[List[string]] = rep(nestedStmt)
+
+// White space of spaces and `##`, the `##` read by a recover, which recovers nothing there.
+object Hashed: RegexParsers
+    override whiteSpace() -> Parser[unit] = rep(elem(' ') ^^^ () | recover(acceptSeq("##".chars()) ^^^ (), success(()), (msg, at) -> ())) ^^^ ()
+
+@test("a parse without a recover lists the failure it ended in, or nothing")
+noRecovery()
+    assertEq(allTold(stmt, "a;"), "a")
+    assertEq(parseAll(stmt, "a;").errors().length(), 0)
+    assertEq(allTold(stmt, "a"), "failed | 1:2: expected `;`, found end of input")
+    assertEq(parseAll(stmt, "a").errors()(0).committed, false)
+    val committed = parseAll(letStmt, "let 1;")
+    assertEq(told(committed), "failed | 1:5: expected identifier, found '1'")
+    assertEq(committed.errors()(0).committed, true)
+    assertEq(committed.errors()(0).pos.offset, 4)
+    assertEq(committed.errors()(0).msg, "expected identifier, found '1'")
+
+@test("recover at the top level reports every bad statement and reads the good ones")
+topLevel()
+    assertEq(allTold(stmts, "a; b; c;"), "[a, b, c]")
+    assertEq(allTold(stmts, "a; b c; d;"), "[a, <1:6>, d] | 1:6: expected `;`, found 'c'")
+    assertEq(allTold(stmts, "1; a; 2; b;"), "[<1:1>, a, <1:7>, b] | 1:1: expected identifier, found '1' | 1:7: expected identifier, found '2'")
+    // The value of a recovered rule is `onError` of the message and the position.
+    assertEq(allTold(rep(recover(stmt, toSemi, (msg, at) -> msg)), "x y;"), "[expected `;`, found 'y'] | 1:3: expected `;`, found 'y'")
+    assertEq(allTold(rep(recover(stmt, toSemi, (msg, at) -> s"${at.line}/${at.column}/${at.offset}")), "a;\nb c;"), "[a, 2/3/5] | 2:3: expected `;`, found 'c'")
+    // The parse succeeded: the errors are beside the value, not in place of it.
+    val r = parseAll(stmts, "a b; c;")
+    assertEq(r.successful(), true)
+    assertEq(r.get().mkString(" "), "<1:3> c")
+    assertEq(s"$r", "[1:8] parsed: [<1:3>, c]")
+    assertEq(r.errors().length(), 1)
+
+@test("an error right after a recovered one is reported on its own, in the order of the text")
+backToBack()
+    assertEq(allTold(stmts, "a b; c d; e;"), "[<1:3>, <1:8>, e] | 1:3: expected `;`, found 'b' | 1:8: expected `;`, found 'd'")
+    assertEq(allTold(stmts, "1;2;a;"), "[<1:1>, <1:3>, a] | 1:1: expected identifier, found '1' | 1:3: expected identifier, found '2'")
+    assertEq(allTold(stmts, ";;"), "[<1:1>, <1:2>] | 1:1: expected identifier, found ';' | 1:2: expected identifier, found ';'")
+    // Many errors, each reported once.
+    assertEq(parseAll(stmts, "1;2;3;4;5;6;7;8;9;").errors().length(), 9)
+    assertEq(s"${parseAll(stmts, "1;2;3;4;5;6;7;8;9;").errors()(8)}", "1:17: expected identifier, found '9'")
+
+@test("the end of the text is not recovered from: the failure there is the parse's")
+endOfText()
+    assertEq(allTold(stmts, "a; b"), "failed | 1:5: expected `;`, found end of input")
+    assertEq(allTold(stmts, "a b; c"), "failed | 1:3: expected `;`, found 'b' | 1:7: expected `;`, found end of input")
+    assertEq(allTold(stmts, "a; "), "[a]")
+    assertEq(allTold(stmts, ""), "[]")
+    assertEq(allTold(recover(stmt, toSemi, marked), ""), "failed | 1:1: expected identifier, found end of input")
+    // A resynchronisation that reaches the end is fine; it is the failure that must not be there.
+    assertEq(allTold(stmts, "a b"), "[<1:3>] | 1:3: expected `;`, found 'b'")
+
+@test("positions are lines and columns counted in characters")
+recoveredPositions()
+    assertEq(allTold(stmts, "é; ü x;"), "[é, <1:6>] | 1:6: expected `;`, found 'x'")
+    assertEq(allTold(stmts, "a;\n  b c;\nd;"), "[a, <2:5>, d] | 2:5: expected `;`, found 'c'")
+    assertEq(allTold(stmts, "a;\n\n\n1;"), "[a, <4:1>] | 4:1: expected identifier, found '1'")
+
+@test("a recover whose rule and resynchronisation read nothing skips a character, so it always moves on")
+progress()
+    val stay = rep(recover(stmt, success(()), (msg, at) -> "?"))
+    // The first recover stops at the error, past the space it read; the second fails there again,
+    // which is the same error, and skips the `1`.
+    assertEq(allTold(stay, "a; 1 b;"), "[a, ?, ?, b] | 1:4: expected identifier, found '1'")
+    assertEq(allTold(stay, "#;"), "[?, ?] | 1:1: expected identifier, found '#' | 1:2: expected identifier, found ';'")
+    // A character of several bytes is skipped whole.
+    assertEq(allTold(stay, "→; a;"), "[?, ?, a] | 1:1: expected identifier, found '→' | 1:2: expected identifier, found ';'")
+    // A resynchronisation that fails is one that read nothing.
+    val never = rep(recover(stmt, failure[unit]("never"), (msg, at) -> "?"))
+    assertEq(allTold(never, "#a;"), "[?, a] | 1:1: expected identifier, found '#'")
+
+@test("a committed failure is recovered from like any other, and its commit is cleared")
+committedFailures()
+    val lets = rep(recover(letStmt | stmt, toSemi, marked))
+    assertEq(allTold(lets, "let 1; a; let b;"), "[<1:5>, a, b] | 1:5: expected identifier, found '1'")
+    assertEq(parseAll(lets, "let 1; a;").errors()(0).committed, true)
+    assertEq(parseAll(lets, "1; a;").errors()(0).committed, false)
+    // The alternatives after the recovered rule are tried again.
+    assertEq(allTold(recover(letStmt, toSemi, marked) ~ (literal("x") | literal("y")), "let 1; y"), "(<1:5>, y) | 1:5: expected identifier, found '1'")
+    // Without a recover the commit fails the repetition.
+    assertEq(allTold(rep(letStmt | stmt), "let 1; a;"), "failed | 1:5: expected identifier, found '1'")
+
+@test("an error inside the resynchronisation is no error of the text")
+errorInSync()
+    // `!` must be followed by `?`, past a commit point: the skip fails there, and is as one that read
+    // nothing.
+    val bad = elem('!') ~! elem('?') ^^^ ()
+    assertEq(allTold(rep(recover(stmt, bad, marked)), "a !x; b;"), "[<1:3>, <1:3>, x, b] | 1:3: expected `;`, found '!'")
+    // One that succeeds skips as usual.
+    assertEq(allTold(rep(recover(stmt, bad, marked)), "a !?b; c;"), "[<1:3>, b, c] | 1:3: expected `;`, found '!'")
+
+@test("recovers nest: an error inside a block resumes inside it")
+nested()
+    assertEq(allTold(program, "a; { b; c d; e; } f;"), "[a, {b <1:11> e}, f] | 1:11: expected `;`, found 'd'")
+    assertEq(allTold(program, "{ { x y; } z; }"), "[{{<1:7>} z}] | 1:7: expected `;`, found 'y'")
+    assertEq(allTold(program, "{ a b; } { c d; }"), "[{<1:5>}, {<1:14>}] | 1:5: expected `;`, found 'b' | 1:14: expected `;`, found 'd'")
+    // A block left open at the end is reported once, by the block, with everything expected there.
+    assertEq(allTold(program, "a; { b;"), "failed | 1:8: expected `{`, identifier or `}`, found end of input")
+    assertEq(parseAll(program, "a; { b;").errors()(0).committed, true)
+    // The inner recover skips past the block's `}`, so the block is left open: the errors are in the
+    // order the text holds them.
+    assertEq(allTold(program, "{ a; ) } b;"), "failed | 1:6: expected `{` or identifier, found ')' | 1:12: expected `{`, identifier or `}`, found end of input")
+
+@test("an abandoned alternative takes the errors it recovered from with it")
+abandoned()
+    val either = rep(recover(stmt, toSemi, marked)) <~ literal("!") | rep(ident)
+    assertEq(allTold(either, "a b c"), "[a, b, c]")
+    // A reading that is kept keeps its errors.
+    assertEq(allTold(recover(stmt, toSemi, marked) | ident, "a b;"), "<1:3> | 1:3: expected `;`, found 'b'")
+    assertEq(allTold(opt(recover(stmt, toSemi, marked) <~ literal("!")) ~ rep(ident), "a b"), "(None, [a, b])")
+    // The longer of two readings keeps its errors; the shorter's are dropped.
+    val longest = recover(stmt, toSemi, marked) ||| rep(ident) ^^ (ns -> ns.mkString("+"))
+    assertEq(allTold(longest, "a b c;"), "<1:3> | 1:3: expected `;`, found 'b'")
+    val shorter = recover(stmt, success(()), marked) ||| rep(ident) ^^ (ns -> ns.mkString("+"))
+    assertEq(allTold(shorter, "a b c"), "a+b+c")
+    // A look ahead reads nothing, so it keeps no error either.
+    assertEq(allTold(guard(recover(stmt, toSemi, marked)) ~> rep(ident), "a b"), "[a, b]")
+
+@test("inside a not and inside white space a recover is only its rule")
+noRecoveryThere()
+    // Were the recover to recover, `not` would fail.
+    assertEq(allTold(not(recover(stmt, toSemi, marked)) ~> rep(ident), "a b"), "[a, b]")
+    assertEq(allTold(not(recover(stmt, toSemi, marked)) ~> rep(ident), "a;"), "failed | 1:1: unexpected 'a'")
+    assertEq(told(Hashed.parseAll(rep(ident), "a ## b")), "[a, b]")
+    assertEq(told(Hashed.parseAll(rep(ident), "a # b")), "failed | 1:3: expected identifier or end of input, found '#'")
+
+@test("an error in white space is recovered from like any other")
+recoveredWhiteSpace()
+    val r = Blocky.parseAll(rep(recover(stmt, toSemi, marked)), "a; /* b; c;")
+    assertEq(told(r), "[a, <1:4>, c] | 1:4: expected `*/` to close the comment that begins here, found '/'")
+    assertEq(r.errors()(0).committed, true)
+    assertEq(told(Blocky.parseAll(rep(recover(stmt, toSemi, marked)), "a; /* b; */ c;")), "[a, c]")

@@ -108,7 +108,7 @@ chainsFromFirst()
 @test("look ahead reads nothing")
 lookAhead()
     assertEq(all(ifKeyword <~ literal("x"), "if x"), "if")
-    assertEq(all(ifKeyword, "iffy"), "failure 1:3: unexpected 'f'")
+    assertEq(all(ifKeyword, "iffy"), "failure 1:1: expected `if`, found 'i'")
     assertEq(all(guard(literal("a")) ~> literal("ab"), "ab"), "ab")
     assertEq(all(guard(literal("b")) ~> literal("ab"), "ab"), "failure 1:1: expected `b`, found 'a'")
 
@@ -124,10 +124,36 @@ lookAheadQuiet()
     // A not nested in a not is as quiet.
     assertEq(all(literal("a") <~ not(literal("b") ~ not(literal("c"))) ~ wholeNumber, "a)"), "failure 1:2: expected whole number, found ')'")
     assertEq(all(literal("a") <~ not(literal("b") ~ not(literal("c"))) ~ wholeNumber, "abc)"), "failure 1:2: expected whole number, found 'b'")
-    // The not's own failure, where its parser succeeds, still says what it found.
-    assertEq(all(literal("a") <~ not(literal("b")), "ab"), "failure 1:2: unexpected 'b'")
+    // The not's own failure, where its parser succeeds and no literal comes just before, says what it
+    // found.
+    assertEq(all(not(literal("b")) ~> literal("b"), "b"), "failure 1:1: unexpected 'b'")
+    assertEq(all(wholeNumber <~ not(literal("b")), "1b"), "failure 1:2: unexpected 'b'")
     // A failure the grammar reached before the look ahead is kept.
     assertEq(all(literal("a") ~ wholeNumber | literal("a") <~ not(literal("b")) ~ literal("c"), "a!"), "failure 1:2: expected whole number or `c`, found '!'")
+
+@test("a not that refuses what follows a literal reports the literal as expected where it began")
+refusedLiterals()
+    assertEq(all(literal("a") <~ not(literal("b")), "ab"), "failure 1:1: expected `a`, found 'a'")
+    assertEq(all(literal("a") ~ not(literal("b")), "ab"), "failure 1:1: expected `a`, found 'a'")
+    assertEq(all(literal("a") ~> not(literal("b")), "ab"), "failure 1:1: expected `a`, found 'a'")
+    // After white space, where the literal began.
+    assertEq(all(ifKeyword, "  \n iffy"), "failure 2:2: expected `if`, found 'i'")
+    // Beside the other alternatives, in the order they were tried.
+    assertEq(all(ifKeyword | literal("else"), "iffy"), "failure 1:1: expected `if` or `else`, found 'i'")
+    assertEq(all(literal("x") | ifKeyword, "iffy"), "failure 1:1: expected `x` or `if`, found 'i'")
+    assertEq(all(ifKeyword | ident, "iffy"), "iffy")
+    // The literal just before the look ahead, not an earlier one.
+    assertEq(all(literal("a") ~ literal("if") <~ not(elem("letter", c -> c.isLetter())), "a iffy"), "failure 1:3: expected `if`, found 'i'")
+    // A literal read inside the look ahead is not the one named.
+    assertEq(all(literal("a") <~ not(literal("b") ~ literal("c")), "abc"), "failure 1:1: expected `a`, found 'a'")
+    // Not when something was read between the literal and the look ahead.
+    assertEq(all(literal("a") ~ elem('-') <~ not(literal("b")), "a-b"), "failure 1:3: unexpected 'b'")
+    // A not inside a not names nothing outside it.
+    assertEq(all(not(literal("a") <~ not(literal("b"))) ~> ident, "ab"), "ab")
+    // A message from further on wins, as any does.
+    assertEq(all(literal("a") ~> literal("b") ~> literal("c") | ifKeyword, "abd"), "failure 1:3: expected `c`, found 'd'")
+    // A repetition of keywords stops at the name, and the message names the keyword it wanted.
+    assertEq(all(rep(ifKeyword), "if if iffy"), "failure 1:7: expected `if` or end of input, found 'i'")
 
 @test("a positioned value carries its line and its column in characters, after white space")
 positions()

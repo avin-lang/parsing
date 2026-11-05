@@ -120,11 +120,13 @@ committed failure is not retried.
             val q = later(other)
             Parser(input ->
                 val start = input.offset
+                val mark = input.errorCount()
                 run(input) match
                     Some(a) -> Some(a)
                     None ->
                         if input.committed then return None
                         input.offset = start
+                        input.dropErrors(mark)
                         q.run(input))
 
 `p ||| q` tries both from the same place and keeps whichever read further: the longest match, for
@@ -138,9 +140,11 @@ one, and where both fail the parse fails with what both expected.
             val q = later(other)
             Parser(input ->
                 val start = input.offset
+                val mark = input.errorCount()
                 val a = run(input)
                 if input.committed then return None
                 val endA = input.offset
+                val errorsA = input.takeErrors(mark)
                 input.offset = start
                 val b = q.run(input)
                 if input.committed then return None
@@ -149,6 +153,8 @@ one, and where both fail the parse fails with what both expected.
                         Some(y) if input.offset > endA -> Some(y)
                         _ ->
                             input.offset = endA
+                            input.dropErrors(mark)
+                            input.addErrors(errorsA)
                             Some(x)
                     None -> b)
 
@@ -252,7 +258,7 @@ such a failure is final.
         // character, in place of the expectations of the parsers it is made of.
         withFailureMessage(msg: string) -> Parser[T] = Parser(input ->
             val start = input.offset
-            input.handleWhiteSpace()
+            if !input.handleWhiteSpace() then return None
             val token = input.offset
             input.offset = start
             val markStart = input.expectationsAt(start)
@@ -277,7 +283,7 @@ the parser started.
     // with the input back at `start`.
     private refuse[T](input: Input, start: int, what: string) -> Option[T]
         input.offset = start
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         input.expect(what)
         input.offset = start
         None
@@ -341,11 +347,13 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
         val s = later(q)
         Parser(input ->
             val start = input.offset
+            val mark = input.errorCount()
             v.run(input) match
                 Some(a) -> separated(v, s, input, a)
                 None ->
                     if input.committed then return None
                     input.offset = start
+                    input.dropErrors(mark)
                     Some(List.empty[T]()))
 
     // As `repsep`, at least one value.
@@ -359,19 +367,24 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
 
 Both loops have the same shape: remember where the next run starts, run, and on failure go back
 there and stop. They stop also when a run read nothing. A committed failure is not a stop but a
-failure of the whole repetition.
+failure of the whole repetition. A run that is not kept, because it failed or read nothing, takes
+any error it recovered from with it, as `recover` below explains.
 
     // `p` run as many times as it succeeds, added to `items`.
     private repeated[T](p: Parser[T], input: Input, items: Buffer[T]) -> Option[List[T]]
         loop
             val start = input.offset
+            val mark = input.errorCount()
             p.run(input) match
                 Some(a) ->
-                    if input.offset == start then break
+                    if input.offset == start
+                        input.dropErrors(mark)
+                        break
                     items.addOne(a)
                 None ->
                     if input.committed then return None
                     input.offset = start
+                    input.dropErrors(mark)
                     break
         Some(items.toList())
 
@@ -385,12 +398,16 @@ a trailing separator an error. `?` returns the `None` at once.
         items.addOne(first)
         loop
             val start = input.offset
+            val mark = input.errorCount()
             if sep.run(input) is None
                 if input.committed then return None
                 input.offset = start
+                input.dropErrors(mark)
                 break
             val a = p.run(input)?
-            if input.offset == start then break
+            if input.offset == start
+                input.dropErrors(mark)
+                break
             items.addOne(a)
         Some(items.toList())
 
@@ -404,11 +421,13 @@ nothing, when it does not.
         val q = later(p)
         Parser(input ->
             val start = input.offset
+            val mark = input.errorCount()
             q.run(input) match
                 Some(a) -> Some(Some(a))
                 None ->
                     if input.committed then return None
                     input.offset = start
+                    input.dropErrors(mark)
                     Some(None))
 
 `commit(p)` makes a failure of `p` final, as `~!` does for what follows its left side: the parse
@@ -421,6 +440,71 @@ answers an `Error` naming what `p` expected.
             val r = q.run(input)
             if r is None then input.committed = true
             r)
+
+## Recovering from errors
+
+A parse that stops at the first mistake tells a person about one mistake at a time. A compiler
+wants them all, and `recover(p, sync, onError)` is how a grammar goes on past one. It runs `p`, and
+where `p` fails, committed or not, it keeps the failure as an error: the message and the position
+the parse would have ended with. Then it clears the input's record of what was expected and its
+commit, so that the next mistake is reported on its own, skips the text with `sync`, and succeeds
+with `onError(message, position)`, a value standing for what could not be read: an error node of the
+syntax tree, an empty list, a default.
+
+```avin
+lazy val statement: Parser[Stmt] = recover(assignment <~ literal(";"), rep(elem("text", c -> c != ';')) ~ opt(literal(";")), (msg, at) -> Broken(at))
+```
+
+`sync` is the grammar's **resynchronisation**: it reads from where the error was up to a place where
+the text can be read again, the end of a statement, the next declaration, a closing bracket, and
+may read that place too. It is any parser. One that fails is as one that reads nothing, with what it
+expected and any commit cleared again; a resynchronisation is a skip, not a part of the grammar that
+can be wrong.
+
+The parse's result then answers every error with `r.errors()`, in the order they were met, followed
+by the failure the parse ended in if it ended in one; `Success`, `Failure` and `Error` mean what they
+always did, so a grammar that never recovers reads the same.
+
+Three rules keep recovery from looping or lying.
+
+- **It always moves on.** A `recover` whose `p` and `sync` together read nothing skips one character,
+  so a repetition of recoveries cannot stay in one place. The skip is taken only then: a `sync` that
+  stops in front of a closing `}`, having been given text to read before it, leaves the `}` for the
+  block. And a `recover` that fails again at the place of the error before it reports one error,
+  not two.
+- **The end of the text is not recovered from.** A failure there has nothing after it to resume, so
+  `recover` fails as `p` did, and the failure goes on to the rules around it, joining whatever else
+  they expected there, until the parse ends in it. A block left open at the end of a file is reported
+  once, as the block's error.
+- **An abandoned alternative takes its errors with it.** The errors were mistakes in a reading of the
+  text that was not kept: `p | q`, `p ||| q`, `opt`, the repetitions and the look aheads drop them
+  when they go back.
+
+Inside a look ahead and inside white space a `recover` is only `p`: neither reads anything for
+keeps, so neither has anything to recover.
+
+    // `p`; where it fails before the end of the text, committed or not, the failure is kept as an error
+    // the result's `errors()` lists, the record of what was expected and the commit are cleared,
+    // `sync` skips from where the error was, and the value is `onError` of the message and the
+    // position. Where `p` and `sync` read nothing, one character is skipped.
+    recover[T, U](p: -> Parser[T], sync: -> Parser[U], onError: (string, Position) -> T) -> Parser[T]
+        val q = later(p)
+        val s = later(sync)
+        Parser(input ->
+            val start = input.offset
+            val r = q.run(input)
+            if r is Some(_) || input.lookingAhead > 0 || input.skippingWhiteSpace() then return r
+            val e = input.recoverFrom(start)?
+            val at = input.offset
+            val mark = input.errorCount()
+            if s.run(input) is None
+                input.offset = at
+                input.dropErrors(mark)
+            input.forget()
+            if input.offset <= start
+                input.offset = start
+                if !input.atEnd() then input.offset += width(input.first())
+            Some(onError(e.msg, e.pos)))
 
 ## Positions
 
@@ -461,7 +545,7 @@ white space first, so the position is the value's own and not that of the space 
     positioned[T: Positional](p: -> Parser[T]) -> Parser[T]
         val q = later(p)
         Parser(input ->
-            input.handleWhiteSpace()
+            if !input.handleWhiteSpace() then return None
             val start = input.offset
             q.run(input) match
                 Some(a) ->
@@ -501,11 +585,13 @@ followed by any number of arguments lists, a value followed by `.field` selectio
         var acc = first.run(input)?
         loop
             val start = input.offset
+            val mark = input.errorCount()
             val g = q.run(input) match
                 Some(g) -> g
                 None ->
                     if input.committed then return None
                     input.offset = start
+                    input.dropErrors(mark)
                     break
             acc = g(acc, p.run(input)?)
         Some(acc)
@@ -532,11 +618,13 @@ stack.
             values.addOne(v.run(input)?)
             loop
                 val start = input.offset
+                val mark = input.errorCount()
                 val g = o.run(input) match
                     Some(g) -> g
                     None ->
                         if input.committed then return None
                         input.offset = start
+                        input.dropErrors(mark)
                         break
                 fs.addOne(g)
                 values.addOne(v.run(input)?)
@@ -576,27 +664,37 @@ value, and leaves the offset where it was.
         val q = later(p)
         Parser(input ->
             val start = input.offset
+            val mark = input.errorCount()
             val r = q.run(input)
             input.offset = start
+            input.dropErrors(mark)
             r)
 
 `not(p)` succeeds where `p` fails: `if` followed by a letter is the start of a name like
 `iffy`, not the keyword. It restores the commit flag too, since a commit inside a look ahead commits
 nothing outside it, and nothing `p` expects is recorded: in `if)`, the letter that would have made
-`if` a name is no part of what the text lacks.
+`if` a name is no part of what the text lacks. Where `not` fails just after a `literal`, it records
+that literal instead, as expected where it began: `literal("if") <~ not(letter)` at `iffy` fails as
+``expected `if`, found 'i'``, exactly as if the text held no `if`. A look ahead reads nothing, so an
+error recovered from inside one, by `guard` or `not`, is dropped with what it read.
 
-    // Succeeds without reading anything where `p` fails, and fails where `p` succeeds.
+    // Succeeds without reading anything where `p` fails, and fails where `p` succeeds, then expecting
+    // the literal read just before, if one was.
     not[T](p: -> Parser[T]) -> Parser[unit]
         val q = later(p)
         Parser(input ->
             val start = input.offset
             val committed = input.committed
+            val mark = input.errorCount()
             input.lookingAhead += 1
             val r = q.run(input)
             input.lookingAhead -= 1
             input.offset = start
             input.committed = committed
-            if r is None then Some(()) else None)
+            input.dropErrors(mark)
+            if r is None then return Some(())
+            input.refuseToken(start)
+            None)
 
 ## Tracing
 
@@ -625,7 +723,7 @@ the parser expected an operator or the end, and found `)`.
         val q = later(p)
         Parser(input ->
             val a = q.run(input)?
-            input.handleWhiteSpace()
+            if !input.handleWhiteSpace() then return None
             if input.atEnd() then Some(a) else input.fail("end of input"))
 
 A grammar is run by `parse` or `parseAll`. `parse` reads as much as the parser takes, for text that

@@ -143,16 +143,19 @@ reported at the character that differs.
 
 `literal` reads exactly the text it is given, after white space. What it expects is the text in
 backquotes, worked out once when the parser is made rather than on every failure, so an error reads
-``expected `]` ``.
+``expected `]` ``. A literal it reads is noted at the input, so that a `not` just after it that
+refuses what follows reports the literal as expected, as `input.lavin` explains.
 
     // Exactly `s`, after white space.
     literal(s: string) -> Parser[string]
         val what = s"`$s`"
         val n = s.byteLength()
         Parser(input ->
-            input.handleWhiteSpace()
-            if input.source.startsWith(s, input.offset)
+            if !input.handleWhiteSpace() then return None
+            val start = input.offset
+            if input.source.startsWith(s, start)
                 input.offset += n
+                input.readToken(start, what)
                 Some(s)
             else input.fail(what))
 
@@ -163,7 +166,7 @@ once, the first time it is used. Each answers the text it read.
 
     // A name, after white space: a letter, in any script, or `_`, then letters, digits and `_`.
     lazy val ident: Parser[string] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         if input.atEnd() || !startsName(input.first()) then return input.fail("identifier")
         val start = input.offset
         skip(input, continuesName)
@@ -179,7 +182,7 @@ A whole number is an optional `-` and decimal digits.
 
     // An optional `-` and decimal digits, after white space.
     lazy val wholeNumber: Parser[string] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val start = input.offset
         if byteIs(input, start, 0x2d) then input.offset += 1
         if skipDigits(input) == 0
@@ -192,7 +195,7 @@ A decimal number has digits, a `.` and digits, with one side of the point allowe
 
     // Digits with an optional `.` and digits after them, or a `.` and digits, after white space.
     lazy val decimalNumber: Parser[string] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val start = input.offset
         if !unsignedDecimal(input) then return input.fail("decimal number")
         Some(input.source.slice(start, input.offset)))
@@ -219,7 +222,7 @@ included, for the grammar to interpret.
     // An optional `-`, a decimal number, an optional exponent and an optional `f`, `F`, `d` or `D`,
     // after white space.
     lazy val floatingPointNumber: Parser[string] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val start = input.offset
         if byteIs(input, start, 0x2d) then input.offset += 1
         if !unsignedDecimal(input)
@@ -246,7 +249,7 @@ before it. A wrong escape is reported at the character after the `\`.
     // `\r`, `\t` and `\u` and four hexadecimal digits, and no control character. The value is the text
     // as written, quotes included.
     lazy val stringLiteral: Parser[string] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val start = input.offset
         if !byteIs(input, start, 0x22) then return input.fail("string")
         input.offset += 1

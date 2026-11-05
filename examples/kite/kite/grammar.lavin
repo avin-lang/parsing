@@ -26,14 +26,25 @@ about the space before it. A grammar says what its white space is by being a `Re
 The comment parsers read characters, never tokens, so that they can run inside the white space
 parser without skipping white space themselves.
 
+A block comment that is never closed is the one mistake white space can hold, and white space
+reports it: where a `/*` does not begin a whole comment, `err` fails past a commit point, which the
+library takes as an error of the text, reported where the `/*` stands. The token about to be read
+fails with it, so the error is found wherever white space is skipped: before a statement, inside an
+expression, at the end of the file.
+
     // `//` to the end of the line, the line end not included.
     lazy val lineComment: Parser[unit] = acceptSeq("//".chars()) ~ rep(elem("comment", c -> c != '\n')) ^^^ ()
 
     // `/*` to the matching `*/`, other block comments nested inside.
     lazy val blockComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(blockComment | not(acceptSeq("*/".chars())) ~> elem("comment", c -> true) ^^^ ()) ~ acceptSeq("*/".chars()) ^^^ ()
 
+    // A `/*` that begins no whole comment: an error where it stands.
+    lazy val openComment: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err[unit](commentMessage)
+
+    val commentMessage = "`*/` to close the comment that begins here"
+
     // Everything skipped before a token.
-    lazy val space: Parser[unit] = rep(elem("space", c -> c.isWhitespace()) ^^^ () | lineComment | blockComment) ^^^ ()
+    lazy val space: Parser[unit] = rep(elem("space", c -> c.isWhitespace()) ^^^ () | lineComment | blockComment | openComment) ^^^ ()
 
 ## Line ends
 
@@ -46,7 +57,8 @@ end begins a new statement.
 Both are questions about the white space between the last token and the next, and the input
 answers them: skip the grammar's white space as a token would, look at what was skipped for a line
 end, and go back. A line end anywhere in it counts, inside a block comment too. Skipping white space
-reports nothing, so neither question adds to an error's message unless it says so.
+reports nothing, so neither question adds to an error's message unless it says so; white space that
+holds an unclosed comment has reported that, and the question fails with it.
 
     // Whether the white space before the next token holds a line end, in a comment or not. Reads
     // nothing.
@@ -69,7 +81,7 @@ reports nothing, so neither question adds to an error's message unless it says s
     lazy val lineEnd: Parser[unit] = Parser(input ->
         if lineBreakAhead(input) then return Some(())
         val start = input.offset
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val atEnd = input.atEnd()
         if !atEnd then input.expect("end of line")
         input.offset = start
@@ -98,7 +110,7 @@ Each is a parser written as a function of the input, as the library's own leaves
 
     // The position of the next token, after white space.
     lazy val here: Parser[Position] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         Some(input.pos()))
 
     // The position of the next character, nothing skipped.
@@ -106,7 +118,7 @@ Each is a parser written as a function of the input, as the library's own leaves
 
     // White space, skipped.
     lazy val skipSpace: Parser[unit] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         Some(()))
 
 ## Brackets, and the error that names the opening one
@@ -146,7 +158,9 @@ item to a line can end every line with a comma.
 
 The keywords are the words a name may not be. A keyword is its letters not followed by another
 letter, digit or `_`, so `iffy` and `format` are names. What `not` looks for is not reported when the
-keyword fails, so `if)` says only what the grammar wanted after `if`.
+keyword fails, so `if)` says only what the grammar wanted after `if`; where `not` refuses the letter
+after the keyword's own, the library reports the keyword as expected where it began, as though the
+text held no keyword there at all.
 
     // The words that are not names.
     val keywords = ["module", "import", "fn", "type", "let", "var", "if", "else", "while", "for", "in", "match", "return", "break", "continue", "true", "false"]
@@ -155,14 +169,14 @@ keyword fails, so `if)` says only what the grammar wanted after `if`.
     nameChar(c: char) -> bool = c == '_' || c.isLetterOrDigit()
 
     // The keyword `word`.
-    kw(word: string) -> Parser[string] = literal(word) <~ not(elem("letter", nameChar)) | refused(s"`$word`")
+    kw(word: string) -> Parser[string] = literal(word) <~ not(elem("letter", nameChar))
 
 A name is the library's `ident`, a letter in any script or `_` then letters, digits and `_`, that is
 not a keyword. A keyword where a name belongs is reported where it stands, naming it.
 
     // A name: an identifier that is not a keyword.
     lazy val name: Parser[string] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val start = input.offset
         anyName.run(input) match
             Some(n) if keywords.contains(n) ->
@@ -206,7 +220,7 @@ and no piece is worth reporting on its own.
 
     // An integer or a float literal, failing past a commit point when an integer is too large.
     lazy val numeral: Parser[Expr] = Parser(input ->
-        input.handleWhiteSpace()
+        if !input.handleWhiteSpace() then return None
         val text = input.source
         val start = input.offset
         val at = input.pos()
@@ -362,11 +376,7 @@ An operator that is the beginning of a longer one is not that operator: `+` is n
 and `.` is not the `.` of `..`. `not` says so.
 
     // `text` as an operator, where the character after it is none of `notBefore`.
-    opTok(text: string, notBefore: string) -> Parser[string] = literal(text) <~ not(elem("operator character", c -> notBefore.contains(s"$c"))) | refused(s"`$text`")
-
-    // Fails where the next token begins, expecting `what`: the end of a rule whose look ahead refused
-    // what it found, since a look ahead says nothing about what was expected.
-    refused[T](what: string) -> Parser[T] = skipSpace ~> failure(what)
+    opTok(text: string, notBefore: string) -> Parser[string] = literal(text) <~ not(elem("operator character", c -> notBefore.contains(s"$c")))
 
     lazy val compareOp: Parser[string] = literal("==") | literal("!=") | literal("<=") | literal(">=") | literal("<") | literal(">")
     lazy val rangeOp: Parser[string] = literal("..=") | literal("..")
@@ -427,8 +437,7 @@ commit point: `a < b < c` asks for `&&`.
             | block
             | arrayLit
             | enclosed("(", nested.expr, ")") ^^ (match (_, e) -> e)
-            | here ~ name ^^ (match (at, n) -> Name(n, at))
-            | openComment[Expr]()).withFailureMessage("expression")
+            | here ~ name ^^ (match (at, n) -> Name(n, at))).withFailureMessage("expression")
 
 `if` and `match` read their condition and their value in the mode they are in, and their blocks
 and arms as statements are read. `else` may begin a line: no statement begins with it, so there is
@@ -479,8 +488,7 @@ statements in order.
         | here <~ kw("break") ^^ (at -> Break(at))
         | here <~ kw("continue") ^^ (at -> Continue(at))
         | exprStmt
-        | leadingOperator
-        | openComment[Stmt]()).withFailureMessage("statement")
+        | leadingOperator).withFailureMessage("statement")
 
     lazy val letStmt: Parser[Stmt] = here ~ (kw("let") ^^^ false | kw("var") ^^^ true) ~! (name ~ opt(literal(":") ~> typeRef) ~ (opTok("=", "=") ~> lined.expr)) ^^ (match ((at, mutable), ((n, t), v)) -> Let(mutable, n, t, v, at))
 
@@ -500,10 +508,8 @@ name, an element or a field, is the checker's question; the parser reads any exp
         (e, None) -> ExprStmt(e)
         (target, Some(((at, op), v))) -> Assign(op, target, v, at))
 
-Two mistakes are common enough to be recognised. An operator that begins a line does not continue
-the line before it, so a statement cannot begin with one, and the error says where to move it. A
-block comment that is never closed is not white space, so it is found where a statement, a
-declaration or an expression should begin, and reported there.
+One mistake is common enough to be recognised. An operator that begins a line does not continue
+the line before it, so a statement cannot begin with one, and the error says where to move it.
 
     // The operators that cannot begin an expression.
     lazy val binaryOperator: Parser[string] = literal("||") | literal("&&") | literal("==") | literal("!=") | literal("<") | literal(">") | literal("+") | literal("*") | literal("/") | literal("%") | literal("..") | literal(".") | literal("=")
@@ -512,16 +518,6 @@ declaration or an expression should begin, and reported there.
     lazy val leadingOperator: Parser[Stmt] = (skipSpace ~> guard(binaryOperator) ~> err[Stmt](leadingMessage)).withErrorMessage(leadingMessage)
 
     val leadingMessage = "statement: an operator after a line end does not continue the line above, so end that line with it"
-
-    // A `/*` with no `*/`, as an error; anything else fails without a word, since it is no part of
-    // what the grammar expected.
-    openComment[T]() -> Parser[T] = Parser[T](input ->
-        input.handleWhiteSpace()
-        if !input.source.startsWith("/*", input.offset) then return None
-        input.committed = true
-        input.fail(commentMessage)).withErrorMessage(commentMessage)
-
-    val commentMessage = "`*/` to close the comment that begins here"
 
 ## Patterns and arms
 
@@ -580,7 +576,7 @@ may begin a line: the declaration is still going.
     lazy val fieldDecl: Parser[FieldDecl] = here ~ name ~ (literal(":") ~> typeRef) ^^ (match ((at, n), t) -> FieldDecl(n, t, at))
 
     // A declaration.
-    lazy val item: Parser[Item] = fnDecl | typeDecl | openComment[Item]()
+    lazy val item: Parser[Item] = fnDecl | typeDecl
 
 ## A file
 

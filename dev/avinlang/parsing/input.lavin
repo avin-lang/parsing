@@ -88,6 +88,34 @@ succeeded, its value with a default, and its value changed by a function.
             Failure(m, n) -> Failure(m, n)
             Error(m, n) -> Error(m, n)
 
+A grammar that recovers from its errors, with `recover` in `parser.lavin`, can succeed and still have
+found mistakes in the text. `errors()` lists every one, in the order the parse met them: those it
+recovered from, then the failure it ended in, if it did. A parse with nothing to report answers an
+empty list, so `r.errors().isEmpty()` is the question "was the text right?", whether or not the
+grammar recovers.
+
+        // Every error the parse met, in order: those `recover` recovered from, then the failure the parse
+        // ended in, if it ended in one. Empty when the text was read without a mistake.
+        errors() -> List[ParseError]
+            val out = Buffer[ParseError]()
+            for e in next().recovered()
+                out.addOne(e)
+            self match
+                Success(_, _) -> ()
+                Failure(m, n) -> out.addOne(ParseError(m, n.pos(), false))
+                Error(m, n) -> out.addOne(ParseError(m, n.pos(), true))
+            out.toList()
+
+An error is its message, its position, and whether it was past a commit point: the `Failure` or
+`Error` it would have been had nothing recovered from it. It shows as `line:column: message`, the
+form a compiler prints.
+
+    // A mistake in the text: what was expected and found, where, and whether it was past a commit point.
+    data ParseError(msg: string, pos: Position, committed: bool)
+
+    impl Display for ParseError
+        display(out: Writer, spec: FormatSpec) = out.write(s"$pos: $msg")
+
 A result shows as its position, what kind it is, and the value or the message:
 `[1:3] parsed: 42`, ``[2:5] failure: expected `,` or `]`, found '4'``.
 
@@ -132,7 +160,10 @@ the grammar that started the parse, as `RegexParsers` in `parser.lavin` describe
 
 What has failed furthest, and what was expected there, are private: parsers record a failure with
 `expect` and `fail` below and never read the record back. `known` is the last position the input
-worked out, explained with `position`. `skipping` is set while the white space parser runs.
+worked out, explained with `position`. `skipping` is set while the white space parser runs, and
+`spaceAt` and `spaceWanted` are the last thing it expected, which is what a white space error
+reports. `tokenStart`, `tokenEnd` and `tokenWanted` are the last `literal` read, which a `not` just
+after it names when it refuses what follows. `found` holds the errors `recover` has recovered from.
 
         private var furthest = -1
         private val expectations = Buffer[string]()
@@ -140,6 +171,15 @@ worked out, explained with `position`. `skipping` is set while the white space p
         private var known = Position(0, 1, 1)
         // Whether the white space parser is running.
         private var skipping = false
+        // Where the white space parser last expected something, and what.
+        private var spaceAt = -1
+        private var spaceWanted = ""
+        // Where the last literal began and ended, after its white space, and what it expected.
+        private var tokenStart = -1
+        private var tokenEnd = -1
+        private var tokenWanted = ""
+        // The errors recovered from, in the order they were met.
+        private val found = Buffer[ParseError]()
 
 These three are what a hand-written parser needs to look at the text.
 
@@ -160,18 +200,43 @@ themselves, or skipping would never end: while it runs, `handleWhiteSpace` does 
 expects is recorded either. White space ends where it fails to read more, and that failure is no
 part of what the text got wrong. A white space parser that fails reads nothing.
 
-        // Moves past the grammar's white space, if it skips any.
-        handleWhiteSpace()
-            if skipping then return
+White space can be wrong, though: a comment opened and never closed. A white space parser says so
+the way any rule does, with a commit point, usually `err(msg)` where the mistake stands:
+
+```avin
+lazy val unclosed: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err("`*/` to close the comment that begins here")
+```
+
+A committed failure inside white space is an error of the text. Since none of white space's own
+failures is part of a message, it is reported as the last thing white space expected before it
+committed, where it expected it, so `err(msg)` reports `msg` exactly where it stands. The input is
+left committed and back where the white space began, and `handleWhiteSpace` answers `false`, so the
+token that was about to be read fails and the parse fails with the error. Every parser that skips
+white space checks the answer: a custom one does it as `if !input.handleWhiteSpace() then return
+None`.
+
+        // Moves past the grammar's white space, if it skips any. Answers `false`, having recorded the
+        // error and committed, where the white space parser fails past a commit point.
+        handleWhiteSpace() -> bool
+            if skipping then return true
             whiteSpace match
                 Some(ws) ->
                     val start = offset
                     val wasCommitted = committed
+                    committed = false
+                    spaceAt = -1
                     skipping = true
-                    if ws.run(self) is None then offset = start
+                    val r = ws.run(self)
                     skipping = false
+                    if r is None
+                        if committed
+                            if spaceAt >= 0 then recordAt(spaceAt, spaceWanted)
+                            offset = start
+                            return false
+                        offset = start
                     committed = wasCommitted
-                None -> ()
+                    true
+                None -> true
 
 ### Recording what was expected
 
@@ -185,7 +250,11 @@ not something the text should have had.
         // since the text is right up to there. Nothing is recorded while white space is skipped or a
         // `not` looks ahead.
         expect(what: string)
-            if skipping || lookingAhead > 0 then return
+            if lookingAhead > 0 then return
+            if skipping
+                spaceAt = offset
+                spaceWanted = what
+                return
             if offset > furthest
                 furthest = offset
                 expectations.clear()
@@ -200,6 +269,36 @@ does both and reads as the last line of a parser that gives up: `else input.fail
         fail[T](what: string) -> Option[T]
             expect(what)
             None
+
+        // Whether the white space parser is running.
+        skippingWhiteSpace() -> bool = skipping
+
+        // Records that `what` was expected at offset `at`, the input staying where it is.
+        private recordAt(at: int, what: string)
+            val here = offset
+            offset = at
+            expect(what)
+            offset = here
+
+A look ahead that refuses what follows a literal, `literal("if") <~ not(elem("letter", c ->
+c.isLetter()))` at `iffy`, has found that the literal was not there after all: the `if` of `iffy`
+is not the keyword. What `not` looked for is no part of the message, so the literal is: `literal`
+notes each token it reads with `readToken`, and `not`, failing right where that token ended, calls
+`refuseToken`, which records the literal as expected where it began. The message then reads
+``expected `if`, found 'i'``, as it would had the text held no `if` at all. A literal read inside a
+look ahead is not noted, since the look ahead reads nothing.
+
+        // Notes that a literal expecting `what` was read from `start` to `offset`.
+        readToken(start: int, what: string)
+            if lookingAhead > 0 then return
+            tokenStart = start
+            tokenEnd = offset
+            tokenWanted = what
+
+        // Records the literal that ended at `at`, if one did, as expected where it began: a look ahead
+        // at `at` has refused what follows it.
+        refuseToken(at: int)
+            if tokenEnd == at && tokenStart >= 0 then recordAt(tokenStart, tokenWanted)
 
 ### Failure messages
 
@@ -230,7 +329,11 @@ expected at the furthest place.
 
         // Replaces everything expected at the furthest place reached by `what`.
         reword(what: string)
-            if furthest < 0 || lookingAhead > 0 then return
+            if lookingAhead > 0 then return
+            if skipping
+                if spaceAt >= 0 then spaceWanted = what
+                return
+            if furthest < 0 then return
             expectations.clear()
             expectations.addOne(what)
 
@@ -281,10 +384,18 @@ particular, which happens when a look ahead refuses a character, says only what 
                 Some(a) -> return Success(a, self)
                 None -> ()
             val at = if furthest < 0 then offset else furthest
+            val msg = message(at, true)
+            offset = at
+            if committed then Error(msg, self) else Failure(msg, self)
+
+        // What a failure at `at` says: everything expected there, when `expected` is set, and what was
+        // found.
+        private message(at: int, expected: bool) -> string
             val seen = Buffer[string]()
-            for e in expectations
-                if !seen.contains(e) then seen.addOne(e)
-            val found = if at >= length then "end of input" else debug(source.charAt(at))
+            if expected
+                for e in expectations
+                    if !seen.contains(e) then seen.addOne(e)
+            val there = if at >= length then "end of input" else debug(source.charAt(at))
             val out = StringWriter()
             val n = seen.length()
             if n == 0
@@ -295,6 +406,70 @@ particular, which happens when a look ahead refuses a character, says only what 
                     if i > 0 then out.write(if i == n - 1 then " or " else ", ")
                     out.write(seen(i))
                 out.write(", found ")
-            out.write(found)
+            out.write(there)
+            out.text()
+
+### Recovering from an error
+
+`recover` in `parser.lavin` turns a failure into an error the parse goes on past. The input does
+the bookkeeping, since the record of what was expected is its own. `recoverFrom` takes the failure
+of a rule that began at `start` as the message the parse would have ended with, at the furthest place
+reached. A rule that failed without recording anything at or past its start, as a look ahead that
+refuses does, is reported at its start as finding something unexpected. The error is kept in the
+list the result's `errors()` answers, unless the error just before it is at the same place: a
+`recover` that resynchronised without moving, and fails there again, has found one mistake, not
+two. Then the record is cleared, the expectations and the
+commit both, so the next failure is reported on its own and the alternatives above are tried again.
+The input is left where the error was, for the rule's resynchronisation to skip from. A failure at
+the end of the text is not taken: there is nothing after it to resume reading, so it is left as it
+is, for the rule around the `recover` and in the end for the result, which reports it as the failure
+the parse ended in, with everything the grammar expected there.
+
+        // Takes the failure of a rule that began at `start` as an error recovered from: keeps it, clears
+        // the record of what was expected and the commit, and moves to where the failure was. Answers the
+        // error, or `None`, changing nothing, where the failure is at the end of the text.
+        recoverFrom(start: int) -> Option[ParseError]
+            val reached = furthest >= start
+            val at = if reached then furthest else start
+            if at >= length then return None
+            val e = ParseError(message(at, reached), position(at), committed)
+            if found.isEmpty() || found(found.length() - 1).pos.offset != at then found.addOne(e)
+            forget()
             offset = at
-            if committed then Error(out.text(), self) else Failure(out.text(), self)
+            Some(e)
+
+        // Clears the record of what was expected, and the commit.
+        forget()
+            furthest = -1
+            expectations.clear()
+            committed = false
+
+An alternative that is abandoned takes the errors it recovered from with it: the grammar tried
+`p | q`, `p` recovered from a mistake and then failed, and `q` read the text instead, so the
+mistake was in a reading of the text that was not kept. The combinators that backtrack note how
+many errors there were before they tried, with `errorCount`, and drop the rest with `dropErrors`
+when they go back.
+
+        // The errors recovered from so far, in the order they were met.
+        recovered() -> List[ParseError] = found.toList()
+
+        // How many errors have been recovered from.
+        errorCount() -> int = found.length()
+
+        // Drops the errors recovered from after the first `count`.
+        dropErrors(count: int)
+            while found.length() > count
+                found.remove(found.length() - 1)
+
+        // Takes out the errors recovered from after the first `count`, answering them.
+        takeErrors(count: int) -> List[ParseError]
+            val out = Buffer[ParseError]()
+            for i in count..<found.length()
+                out.addOne(found(i))
+            dropErrors(count)
+            out.toList()
+
+        // Adds `es` to the errors recovered from.
+        addErrors(es: List[ParseError])
+            for e in es
+                found.addOne(e)
