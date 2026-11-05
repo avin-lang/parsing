@@ -1,0 +1,9 @@
+package {
+  name = "kite"
+  version = "0.1.0"
+  description = "Kite: a small interpreted language whose parser is written with the parsing library"
+}
+
+dependencies {
+  parsing { path = "../.." }
+}

@@ -1,0 +1,606 @@
+# Kite's grammar
+
+This file is Kite's parser: the grammar of [`SPEC.md`](../SPEC.md), written as Avin values with the
+parsing library. It is a literate Avin file: everything indented four columns is the program, and
+everything at the margin explains it.
+
+    module kite
+
+    import dev.avinlang.parsing.{Input, ParseResult, Parser, Position, RegexParsers, acceptMatch, acceptSeq, chainl1, commit, elem, err, failure, guard, ident, literal, not, opt, rep, rep1, rep1sep, success}
+
+The parser reads a whole file and answers a `Module`, or the first syntax error with its line and
+column. Expressions, statements and types can be parsed on their own too, which is how the tests
+look at one rule at a time.
+
+## White space belongs to the grammar
+
+Kite's white space is spaces, tabs, line ends, `// line comments` and `/* block comments */`, which
+nest. It is skipped before every token, line ends included, so a token never has to say anything
+about the space before it. A grammar says what its white space is by being a `RegexParsers`:
+
+    // The Kite grammar's white space: every white space character, line comments, and block comments,
+    // which nest.
+    object Kite: RegexParsers
+        override whiteSpace() -> Parser[unit] = space
+
+The comment parsers read characters, never tokens, so that they can run inside the white space
+parser without skipping white space themselves.
+
+    // `//` to the end of the line, the line end not included.
+    lazy val lineComment: Parser[unit] = acceptSeq("//".chars()) ~ rep(elem("comment", c -> c != '\n')) ^^^ ()
+
+    // `/*` to the matching `*/`, other block comments nested inside.
+    lazy val blockComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(blockComment | not(acceptSeq("*/".chars())) ~> elem("comment", c -> true) ^^^ ()) ~ acceptSeq("*/".chars()) ^^^ ()
+
+    // Everything skipped before a token.
+    lazy val space: Parser[unit] = rep(elem("space", c -> c.isWhitespace()) ^^^ () | lineComment | blockComment) ^^^ ()
+
+## Line ends
+
+Since every token skips line ends, a line end is never in the way; the grammar asks about one only
+where it matters. A newline ends a statement, so a statement has to be followed by a line end, by
+the `}` closing its block, or by the end of the text. And an expression outside brackets must not
+continue onto the next line: an operator, a call's `(`, an index's `[` or a field's `.` after a line
+end begins a new statement.
+
+Both are questions about the white space between the last token and the next, and the input
+answers them: skip the grammar's white space as a token would, look at what was skipped for a line
+end, and go back. A line end anywhere in it counts, inside a block comment too. Skipping white space
+reports nothing, so neither question adds to an error's message unless it says so.
+
+    // Whether the white space before the next token holds a line end, in a comment or not. Reads
+    // nothing.
+    lineBreakAhead(input: Input) -> bool
+        val start = input.offset
+        input.handleWhiteSpace()
+        val end = input.offset
+        input.offset = start
+        var i = start
+        while i < end
+            if int(input.source.byteAt(i)) == 0x0a then return true
+            i += 1
+        false
+
+    // Succeeds, reading nothing, where the next token is on the same line.
+    lazy val sameLine: Parser[unit] = Parser(input -> if lineBreakAhead(input) then None else Some(()))
+
+    // Succeeds, reading nothing, where the line ends, or the text does, before the next token; fails
+    // at that token, expecting the end of the line.
+    lazy val lineEnd: Parser[unit] = Parser(input ->
+        if lineBreakAhead(input) then return Some(())
+        val start = input.offset
+        input.handleWhiteSpace()
+        val atEnd = input.atEnd()
+        if !atEnd then input.expect("end of line")
+        input.offset = start
+        if atEnd then Some(()) else None)
+
+    // What may follow a statement: the end of its line, or the `}` that closes its block.
+    lazy val stmtEnd: Parser[unit] = lineEnd | guard(literal("}")) ^^^ ()
+
+Inside `(`, `[`, a record type's `{` and an interpolation's `{` the newline rule is off: an
+operator may begin a line there, since no statement can end inside a bracket. The expression rules
+are therefore made twice, once for each **mode**, and differ only in `gap`, the parser run before an
+operator or a suffix: `sameLine` in a statement, nothing at all inside a bracket. A bracket switches
+to `nested`, and a block, whose `{` holds statements, switches back to `lined`.
+
+    // The expression rules where a line end ends the expression: in statements.
+    lazy val lined: Exprs = Exprs(false)
+
+    // The expression rules inside brackets, where line ends are white space like any other.
+    lazy val nested: Exprs = Exprs(true)
+
+## Positions
+
+A node carries the line and column it begins at. `here` skips white space and answers the position
+of the token that follows; `point` answers the position without skipping, for the inside of a string.
+Each is a parser written as a function of the input, as the library's own leaves are.
+
+    // The position of the next token, after white space.
+    lazy val here: Parser[Position] = Parser(input ->
+        input.handleWhiteSpace()
+        Some(input.pos()))
+
+    // The position of the next character, nothing skipped.
+    lazy val point: Parser[Position] = Parser(input -> Some(input.pos()))
+
+    // White space, skipped.
+    lazy val skipSpace: Parser[unit] = Parser(input ->
+        input.handleWhiteSpace()
+        Some(()))
+
+## Brackets, and the error that names the opening one
+
+A bracket that is never closed is the commonest syntax error, and the place it is noticed can be
+far from the place it was made. So a closing bracket that is missing is reported against the opening
+one: *expected `)` to close `(` at 3:10*. The opening bracket's position is read first and the rest
+of the rule is made from it with `flatMap`. The closing bracket is a commit point: once a bracket is
+open, nothing but its contents and its closing bracket can follow, and no other alternative is
+worth trying.
+
+`withFailureMessage` renames the closing bracket's failure only when the parse got no further than
+the closing bracket. When something inside the brackets went wrong further on, that is the error,
+and it is reported as it is.
+
+    // `inner` between `open` and `close`, with the position of `open`.
+    enclosed[T](open: string, inner: -> Parser[T], close: string) -> Parser[(Position, T)] =
+        (here <~ literal(open)).flatMap(at -> inner <~ closing(open, close, at) ^^ (v -> (at, v)))
+
+    // The `close` that matches the `open` at `at`, which must be there.
+    closing(open: string, close: string, at: Position) -> Parser[string] =
+        commit(literal(close).withFailureMessage(s"`$close` to close `$open` at $at"))
+
+A list in brackets separates its items with commas and may end with one, so that a list written one
+item to a line can end every line with a comma.
+
+    // `p`s separated by commas, none included, with an optional comma after the last.
+    commaList[T](p: -> Parser[T]) -> Parser[List[T]] =
+        opt(p ~ rep(literal(",") ~> p) <~ opt(literal(","))) ^^ (o -> listed(o))
+
+    // The list a `commaList` read: the first item and the rest, or nothing.
+    listed[T](o: Option[(T, List[T])]) -> List[T] = o match
+        Some((first, rest)) -> first :: rest
+        None -> []
+
+## Words
+
+The keywords are the words a name may not be. A keyword is its letters not followed by another
+letter, digit or `_`, so `iffy` and `format` are names. What `not` looks for is not reported when the
+keyword fails, so `if)` says only what the grammar wanted after `if`.
+
+    // The words that are not names.
+    val keywords = ["module", "import", "fn", "type", "let", "var", "if", "else", "while", "for", "in", "match", "return", "break", "continue", "true", "false"]
+
+    // Whether `c` may continue a name.
+    nameChar(c: char) -> bool = c == '_' || c.isLetterOrDigit()
+
+    // The keyword `word`.
+    kw(word: string) -> Parser[string] = literal(word) <~ not(elem("letter", nameChar)) | refused(s"`$word`")
+
+A name is the library's `ident`, a letter in any script or `_` then letters, digits and `_`, that is
+not a keyword. A keyword where a name belongs is reported where it stands, naming it.
+
+    // A name: an identifier that is not a keyword.
+    lazy val name: Parser[string] = Parser(input ->
+        input.handleWhiteSpace()
+        val start = input.offset
+        anyName.run(input) match
+            Some(n) if keywords.contains(n) ->
+                input.offset = start
+                input.fail(s"name (`$n` is a keyword)")
+            r -> r)
+
+    // An identifier, keywords included, expected as a `name`.
+    lazy val anyName: Parser[string] = ident.withFailureMessage("name")
+
+    // Names joined by `.`: `geometry.shapes`.
+    lazy val dottedName: Parser[string] = rep1sep(name, sameLine ~> literal(".")) ^^ (parts -> parts.mkString("."))
+
+## Numbers
+
+A number is digits, then optionally a `.` and digits, then optionally an exponent; it is a float
+when it has either. A `.` not followed by a digit is not part of the number, so `0..10` is a range
+and `1.max` a field. A number running into a letter, `12abc`, is an error at the letter. An integer
+too large for `i64` is an error at the number, and a final one: no other rule would read it better.
+The number is read by a parser written as a function of the input, because its pieces are bytes
+and no piece is worth reporting on its own.
+
+    // The byte at `at` as a number, or -1 past the end of `text`.
+    byteOf(text: string, at: int) -> int = if at < text.byteLength() then int(text.byteAt(at)) else -1
+
+    // Whether the byte at `at` is an ASCII digit.
+    digitAt(text: string, at: int) -> bool = byteOf(text, at) >= 0x30 && byteOf(text, at) <= 0x39
+
+    // Moves past ASCII digits, answering how many.
+    skipDigits(text: string, from: int) -> int
+        var i = from
+        while digitAt(text, i)
+            i += 1
+        i - from
+
+    // An integer or a float literal. An integer too large is the whole error: whatever else could have
+    // stood where it does is not mentioned.
+    lazy val number: Parser[Expr] = numeral.withErrorMessage(tooLarge)
+
+    val tooLarge = "integer of at most 9223372036854775807, the largest i64"
+
+    // An integer or a float literal, failing past a commit point when an integer is too large.
+    lazy val numeral: Parser[Expr] = Parser(input ->
+        input.handleWhiteSpace()
+        val text = input.source
+        val start = input.offset
+        val at = input.pos()
+        val whole = skipDigits(text, start)
+        if whole == 0 then return input.fail("number")
+        input.offset += whole
+        var isFloat = false
+        if byteOf(text, input.offset) == 0x2e && digitAt(text, input.offset + 1)
+            input.offset += 1
+            input.offset += skipDigits(text, input.offset)
+            isFloat = true
+        if byteOf(text, input.offset) == 0x65 || byteOf(text, input.offset) == 0x45
+            var i = input.offset + 1
+            if byteOf(text, i) == 0x2b || byteOf(text, i) == 0x2d then i += 1
+            val digits = skipDigits(text, i)
+            if digits > 0
+                input.offset = i + digits
+                isFloat = true
+        if !input.atEnd() && nameChar(input.first()) then return input.fail("digit")
+        val written = text.slice(start, input.offset)
+        if isFloat then return Some(FloatLit(written.toRealOption().getOrElse(0.0), at))
+        written.toLongOption() match
+            Some(v) -> Some(IntLit(v, at))
+            None ->
+                input.offset = start
+                input.committed = true
+                input.fail(tooLarge))
+
+## Strings, and switching lexical modes
+
+Inside a string the rules of tokens are off: white space is text, `//` is text, and `{` begins an
+interpolated expression. The string is read with character parsers, which skip nothing, so the
+switch into the string's mode is simply using them. The switch back, inside `{…}`, is using the
+token parsers again: `nested.expr` skips white space before each token as every expression does,
+and may itself hold a string, which holds an interpolation, to any depth.
+
+    // Text of a string: any characters but `"`, `\`, `{` and a line end.
+    lazy val textChunk: Parser[StrPart] = rep1(elem("string character", c -> c != '"' && c != '\\' && c != '{' && c != '\n')) ^^ (cs -> Text(cs.mkString("")))
+
+An escape is `\` and one character, or `\u{…}` with one to six hex digits naming a Unicode scalar
+value. Anything else after a `\` is an error at that character, and final.
+
+    // The text an escape stands for, after its `\`.
+    lazy val escapeBody: Parser[string] = (acceptMatch("escape", escapes) | unicodeEscape).withFailureMessage("escape (`\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\\"`, `\\{`, `\\}` or `\\u{…}`)")
+
+    // The one-character escapes.
+    val escapes: PartialFunction[char, string] = match
+        'n' -> "\n"
+        't' -> "\t"
+        'r' -> "\r"
+        '0' -> "\u{0}"
+        '\\' -> "\\"
+        '"' -> "\""
+        '{' -> "{"
+        '}' -> "}"
+
+    // `u{…}`: the character with that code.
+    lazy val unicodeEscape: Parser[string] = (elem('u') ~> commit(elem('{') ~> rep1(hexDigit) <~ elem('}')).withErrorMessage("`{`, hex digits and `}` after `\\u`")).flatMap(ds -> scalar(ds))
+
+    // A hex digit's value.
+    lazy val hexDigit: Parser[int] = acceptMatch("hex digit", hexValue)
+
+    val hexValue: PartialFunction[char, int] = match
+        c if c >= '0' && c <= '9' -> int(c) - 48
+        c if c >= 'a' && c <= 'f' -> int(c) - 87
+        c if c >= 'A' && c <= 'F' -> int(c) - 55
+
+    // The character the hex digits `ds` name, which must be a Unicode scalar value.
+    scalar(ds: List[int]) -> Parser[string]
+        var code = 0
+        for d in ds
+            if code > 0x10ffff then break
+            code = code * 16 + d
+        if ds.length() > 6 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) then err[string]("Unicode scalar value (at most 10FFFF, and not D800 to DFFF) in `\\u{…}`")
+        else success(s"${char(code)}")
+
+    // `\` and an escape.
+    lazy val escape: Parser[StrPart] = elem('\\') ~> commit(escapeBody) ^^ (t -> Text(t))
+
+    // `{`, an expression, `}`.
+    lazy val interpolation: Parser[StrPart] = (point <~ elem('{')).flatMap(at -> commit(nested.expr) <~ closing("{", "}", at)) ^^ (e -> Interp(e))
+
+A string that is not closed before its line ends is reported against its opening quote. The
+closing quote is a commit point, and its message replaces whatever else the string's pieces expected
+where they stopped.
+
+    // A string whose pieces are `part`s, with the position of its opening quote.
+    quotedWith(part: -> Parser[StrPart]) -> Parser[(Position, List[StrPart])] =
+        (here <~ elem('"')).flatMap(at -> rep(part) <~ commit(elem('"')).withErrorMessage(s"`\"` to close the string at $at") ^^ (parts -> (at, merged(parts))))
+
+    // The pieces of a string with neighbouring text joined, so `"a\tb"` is one piece of text.
+    merged(parts: List[StrPart]) -> List[StrPart]
+        val out = Buffer[StrPart]()
+        var text: Option[StringWriter] = None
+        for p in parts
+            p match
+                Text(t) -> text match
+                    Some(w) -> w.write(t)
+                    None ->
+                        val w = StringWriter()
+                        w.write(t)
+                        text = Some(w)
+                Interp(_) ->
+                    text match
+                        Some(w) -> out.addOne(Text(w.text()))
+                        None -> ()
+                    text = None
+                    out.addOne(p)
+        text match
+            Some(w) -> out.addOne(Text(w.text()))
+            None -> ()
+        out.toList()
+
+    // A string literal, with interpolation.
+    lazy val stringLit: Parser[Expr] = quotedWith(textChunk | escape | interpolation) ^^ (match (at, parts) -> StrLit(parts, at))
+
+A pattern's string is matched against, so it cannot interpolate; a `{` in one is an error that says
+how to write a brace.
+
+    // A `{` inside a pattern's string.
+    lazy val braceInPattern: Parser[StrPart] = (guard(elem('{')) ~> err[StrPart]("text: a pattern's string cannot interpolate, so write a brace as `\\{`")).withErrorMessage("text: a pattern's string cannot interpolate, so write a brace as `\\{`")
+
+    // A string without interpolation.
+    lazy val plainString: Parser[(Position, string)] = quotedWith(textChunk | escape | braceInPattern) ^^ (match (at, parts) -> (at, parts.map(textOf).mkString("")))
+
+    // The text of a piece of a string; an interpolation has none.
+    textOf(p: StrPart) -> string = p match
+        Text(t) -> t
+        Interp(_) -> ""
+
+## Types
+
+A type is a name, `i64` and `Shape` alike, or a fixed array `[T; n]`. Which names are types is the
+checker's question.
+
+    // A type.
+    lazy val typeRef: Parser[TypeRef] = (here ~ name ^^ (match (at, n) -> NamedType(n, at)) | arrayType).withFailureMessage("type")
+
+    // `[T; n]`.
+    lazy val arrayType: Parser[TypeRef] = enclosed("[", typeRef ~ (literal(";") ~> arraySize), "]") ^^ (match (at, (t, n)) -> ArrayType(t, n, at))
+
+    // The length of an array type: a whole number.
+    lazy val arraySize: Parser[long] = number.^?(match IntLit(n, _) -> n, e -> "whole number for the array's length")
+
+## Expressions
+
+The precedence levels, loosest first, each a rule of the next: `||`; `&&`; the comparisons, which do
+not chain; the ranges, which do not chain either; `+` and `-`; `*`, `/` and `%`; the prefix `-` and
+`!`; the suffixes, a call, an index and a field; and the primaries. Each level's operator is read
+after `gap`, which is where the newline rule lives.
+
+An operator that is the beginning of a longer one is not that operator: `+` is not the `+` of `+=`,
+and `.` is not the `.` of `..`. `not` says so.
+
+    // `text` as an operator, where the character after it is none of `notBefore`.
+    opTok(text: string, notBefore: string) -> Parser[string] = literal(text) <~ not(elem("operator character", c -> notBefore.contains(s"$c"))) | refused(s"`$text`")
+
+    // Fails where the next token begins, expecting `what`: the end of a rule whose look ahead refused
+    // what it found, since a look ahead says nothing about what was expected.
+    refused[T](what: string) -> Parser[T] = skipSpace ~> failure(what)
+
+    lazy val compareOp: Parser[string] = literal("==") | literal("!=") | literal("<=") | literal(">=") | literal("<") | literal(">")
+    lazy val rangeOp: Parser[string] = literal("..=") | literal("..")
+    lazy val addOp: Parser[string] = opTok("+", "=") | opTok("-", "=")
+    lazy val mulOp: Parser[string] = opTok("*", "=") | opTok("/", "=") | opTok("%", "=")
+    lazy val unaryOp: Parser[string] = opTok("-", "=") | opTok("!", "=")
+    lazy val assignOp: Parser[string] = (literal("+=") | literal("-=") | literal("*=") | literal("/=") | literal("%=") | opTok("=", "=>")).withFailureMessage("operator")
+
+    // A binary node or a range: what each operator makes of its operands and its position.
+    makeBinary(op: string, l: Expr, r: Expr, at: Position) -> Expr = op match
+        ".." -> RangeExpr(l, r, false, at)
+        "..=" -> RangeExpr(l, r, true, at)
+        _ -> Binary(op, l, r, at)
+
+    // An operand and, when one was read, an operator and a second operand: their node.
+    joined(e: (Expr, Option[((Expr, Expr) -> Expr, Expr)])) -> Expr = e match
+        (l, Some((f, r))) -> f(l, r)
+        (l, None) -> l
+
+The rules of one mode. `chainl1` folds each left-grouping level as it reads. The comparisons and
+the ranges read at most one operator, and a second one is an error at the second operator, past a
+commit point: `a < b < c` asks for `&&`.
+
+    // The expression rules of one mode: `nested` inside brackets, where a line end is white space, and
+    // not in statements, where it ends the expression.
+    class Exprs(val inBrackets: bool)
+        // What comes before an operator or a suffix.
+        lazy val gap: Parser[unit] = if inBrackets then success(()) else sameLine
+
+        // An expression.
+        lazy val expr: Parser[Expr] = chainl1(conjunction, binary(literal("||")))
+
+        lazy val conjunction: Parser[Expr] = chainl1(comparison, binary(literal("&&")))
+
+        lazy val comparison: Parser[Expr] = rangeExpr ~ opt(binary(compareOp) ~ rangeExpr) <~ unchained(compareOp, "`&&` between two comparisons, which do not chain") ^^ joined
+
+        lazy val rangeExpr: Parser[Expr] = additive ~ opt(binary(rangeOp) ~ additive) <~ unchained(rangeOp, "the end of the range, since ranges do not chain") ^^ joined
+
+        lazy val additive: Parser[Expr] = chainl1(multiplicative, binary(addOp))
+
+        lazy val multiplicative: Parser[Expr] = chainl1(prefixed, binary(mulOp))
+
+        lazy val prefixed: Parser[Expr] = (here ~ unaryOp ~ prefixed ^^ (match ((at, op), x) -> Unary(op, x, at))
+            | suffixed).withFailureMessage("expression")
+
+        lazy val suffixed: Parser[Expr] = primary ~ rep(gap ~> suffix) ^^ (match (e, fs) -> fs.foldLeft(e, (acc, f) -> f(acc)))
+
+        // A call's arguments, an index or a field: what it makes of the expression before it.
+        lazy val suffix: Parser[Expr -> Expr] = (enclosed("(", commaList(argument), ")") ^^ (match (at, args) -> (f: Expr) -> Call(f, args, at))
+            | enclosed("[", nested.expr, "]") ^^ (match (at, i) -> (t: Expr) -> Index(t, i, at))
+            | here ~ (opTok(".", ".") ~> name) ^^ (match (at, n) -> (t: Expr) -> Field(t, n, at))).withFailureMessage("operator")
+
+        lazy val primary: Parser[Expr] = (number
+            | stringLit
+            | here ~ (kw("true") ^^^ true | kw("false") ^^^ false) ^^ (match (at, b) -> BoolLit(b, at))
+            | ifExpr
+            | matchExpr
+            | block
+            | arrayLit
+            | enclosed("(", nested.expr, ")") ^^ (match (_, e) -> e)
+            | here ~ name ^^ (match (at, n) -> Name(n, at))
+            | openComment[Expr]()).withFailureMessage("expression")
+
+`if` and `match` read their condition and their value in the mode they are in, and their blocks
+and arms as statements are read. `else` may begin a line: no statement begins with it, so there is
+nothing for the line end to have ended.
+
+        lazy val ifExpr: Parser[Expr] = here ~ (kw("if") ~! (expr ~ block ~ opt(kw("else") ~! (ifExpr | block)))) ^^ (match (at, (_, ((c, t), o))) -> If(c, t, o.map(match (_, e) -> e), at))
+
+        lazy val matchExpr: Parser[Expr] = here ~ (kw("match") ~! (expr ~ enclosed("{", arms, "}"))) ^^ (match (at, (_, (x, (_, arms)))) -> Match(x, arms, at))
+
+        // An operator of this mode: read after `gap`, making its node from its operands.
+        binary(op: Parser[string]) -> Parser[(Expr, Expr) -> Expr] = (gap ~> here ~ op ^^ (match (at, o) -> (l: Expr, r: Expr) -> makeBinary(o, l, r, at))).withFailureMessage("operator")
+
+        // Nothing, where `op` does not follow; where it does, an error at it expecting `what`.
+        unchained(op: Parser[string], what: string) -> Parser[unit] = not(gap ~> op) | (skipSpace ~> err[unit](what)).withErrorMessage(what)
+
+A call's argument may be named, `P(x: 1.0, y: 2.0)`, which is how a record or a variant is built.
+The name is read only where a name and `:` are both there, which `not(not(…))` sees without
+recording anything, so a message about an argument never offers a `:` after an expression that
+happens to be a name.
+
+    // An argument: an expression, perhaps after a name and `:`.
+    lazy val argument: Parser[Arg] = opt(not(not(name ~ literal(":"))) ~> name <~ literal(":")) ~ nested.expr ^^ (match (n, v) -> Arg(n, v))
+
+An array is its items in brackets, or one item, `;` and a count: `[0.0; 8]`.
+
+    lazy val arrayLit: Parser[Expr] = enclosed("[", opt(nested.expr ~ arrayRest), "]") ^^ (match
+        (at, Some((first, rest))) -> rest(first, at)
+        (at, None) -> ArrayLit([], at))
+
+    // What follows an array's first item: `;` and a count, or more items.
+    lazy val arrayRest: Parser[(Expr, Position) -> Expr] = literal(";") ~> nested.expr ^^ (c -> (first: Expr, at: Position) -> ArrayRepeat(first, c, at))
+        | rep(literal(",") ~> nested.expr) <~ opt(literal(",")) ^^ (rest -> (first: Expr, at: Position) -> ArrayLit(first :: rest, at))
+
+## Statements and blocks
+
+A block is statements in braces, each ended by its line or by the `}`. Its value is its last
+statement's, when that is an expression, which is the checker's business; the parser keeps the
+statements in order.
+
+    // `{`, statements, `}`.
+    lazy val block: Parser[Expr] = enclosed("{", rep(stmt <~ stmtEnd), "}") ^^ (match (at, stmts) -> BlockExpr(stmts, at))
+
+    // A statement.
+    lazy val stmt: Parser[Stmt] = (letStmt
+        | whileStmt
+        | forStmt
+        | returnStmt
+        | here <~ kw("break") ^^ (at -> Break(at))
+        | here <~ kw("continue") ^^ (at -> Continue(at))
+        | exprStmt
+        | leadingOperator
+        | openComment[Stmt]()).withFailureMessage("statement")
+
+    lazy val letStmt: Parser[Stmt] = here ~ (kw("let") ^^^ false | kw("var") ^^^ true) ~! (name ~ opt(literal(":") ~> typeRef) ~ (opTok("=", "=") ~> lined.expr)) ^^ (match ((at, mutable), ((n, t), v)) -> Let(mutable, n, t, v, at))
+
+    lazy val whileStmt: Parser[Stmt] = here ~ (kw("while") ~! (lined.expr ~ block)) ^^ (match (at, (_, (c, b))) -> While(c, b, at))
+
+    lazy val forStmt: Parser[Stmt] = here ~ (kw("for") ~! (name ~ (kw("in") ~> lined.expr) ~ block)) ^^ (match (at, (_, ((n, over), b))) -> For(n, over, b, at))
+
+A `return`'s value is on its line: `return` at the end of a line returns nothing, and the line
+after it is the next statement.
+
+    lazy val returnStmt: Parser[Stmt] = here ~ (kw("return") ~> opt(sameLine ~> lined.expr)) ^^ (match (at, v) -> Return(v, at))
+
+An expression statement may be the target of an assignment. Whether the target is a place, a
+name, an element or a field, is the checker's question; the parser reads any expression there.
+
+    lazy val exprStmt: Parser[Stmt] = lined.expr ~ opt(sameLine ~> here ~ assignOp ~ lined.expr) ^^ (match
+        (e, None) -> ExprStmt(e)
+        (target, Some(((at, op), v))) -> Assign(op, target, v, at))
+
+Two mistakes are common enough to be recognised. An operator that begins a line does not continue
+the line before it, so a statement cannot begin with one, and the error says where to move it. A
+block comment that is never closed is not white space, so it is found where a statement, a
+declaration or an expression should begin, and reported there.
+
+    // The operators that cannot begin an expression.
+    lazy val binaryOperator: Parser[string] = literal("||") | literal("&&") | literal("==") | literal("!=") | literal("<") | literal(">") | literal("+") | literal("*") | literal("/") | literal("%") | literal("..") | literal(".") | literal("=")
+
+    // An operator at the start of a line, as an error.
+    lazy val leadingOperator: Parser[Stmt] = (skipSpace ~> guard(binaryOperator) ~> err[Stmt](leadingMessage)).withErrorMessage(leadingMessage)
+
+    val leadingMessage = "statement: an operator after a line end does not continue the line above, so end that line with it"
+
+    // A `/*` with no `*/`, as an error; anything else fails without a word, since it is no part of
+    // what the grammar expected.
+    openComment[T]() -> Parser[T] = Parser[T](input ->
+        input.handleWhiteSpace()
+        if !input.source.startsWith("/*", input.offset) then return None
+        input.committed = true
+        input.fail(commentMessage)).withErrorMessage(commentMessage)
+
+    val commentMessage = "`*/` to close the comment that begins here"
+
+## Patterns and arms
+
+A pattern is `_`, a literal, a name, or a variant's name with patterns for its fields. A name alone
+is a binding or a variant without fields; the checker tells which.
+
+    // A pattern.
+    lazy val pattern: Parser[Pattern] = (here <~ (literal("_") <~ not(elem("letter", nameChar))) ^^ (at -> WildPat(at))
+        | here ~ opt(literal("-")) ~ number ^^ (match ((at, minus), n) -> numberPattern(minus is Some(_), n, at))
+        | plainString ^^ (match (at, t) -> StrPat(t, at))
+        | here ~ (kw("true") ^^^ true | kw("false") ^^^ false) ^^ (match (at, b) -> BoolPat(b, at))
+        | namedPattern).withFailureMessage("pattern")
+
+    // A name, perhaps with patterns for a variant's fields.
+    lazy val namedPattern: Parser[Pattern] = here ~ name ~ opt(enclosed("(", commaList(pattern), ")")) ^^ (match
+        ((at, n), Some((_, fields))) -> VariantPat(n, fields, at)
+        ((at, n), None) -> NamePat(n, at))
+
+    // A number pattern, negated after a `-`.
+    numberPattern(minus: bool, n: Expr, at: Position) -> Pattern = n match
+        IntLit(v, _) -> IntPat(if minus then -v else v, at)
+        FloatLit(v, _) -> FloatPat(if minus then -v else v, at)
+        _ -> WildPat(at)
+
+An arm is a pattern, `=>` and an expression, ended by its line, a `,`, or the `}` of the `match`.
+`=>` may end a line, as any operator may.
+
+    // A `match` arm.
+    lazy val arm: Parser[Arm] = pattern ~! (literal("=>") ~> lined.expr) ^^ (match (p, body) -> Arm(p, body))
+
+    // A `match`'s arms.
+    lazy val arms: Parser[List[Arm]] = rep(arm <~ (literal(",") ^^^ () | stmtEnd))
+
+## Declarations
+
+A function has typed parameters, an optional result type after `->`, and a block. A type is an
+alias of another, a record of named fields in braces, or a sum of variants, each after a `|`, which
+may begin a line: the declaration is still going.
+
+    // A function.
+    lazy val fnDecl: Parser[Item] = here ~ (kw("fn") ~! (name ~ enclosed("(", commaList(param), ")") ~ opt(literal("->") ~> typeRef) ~ block)) ^^ (match (at, (_, (((n, (_, ps)), r), body))) -> FnDecl(n, ps, r, body, at))
+
+    lazy val param: Parser[Param] = here ~ name ~ (literal(":") ~> typeRef) ^^ (match ((at, n), t) -> Param(n, t, at))
+
+    // A type declaration.
+    lazy val typeDecl: Parser[Item] = here ~ (kw("type") ~! (name ~ (opTok("=", "=") ~> typeDef))) ^^ (match (at, (_, (n, d))) -> TypeDecl(n, d, at))
+
+    lazy val typeDef: Parser[TypeDef] = rep1(literal("|") ~> variant) ^^ (vs -> Sum(vs))
+        | enclosed("{", commaList(fieldDecl), "}") ^^ (match (_, fs) -> Record(fs))
+        | typeRef ^^ (t -> Alias(t))
+
+    lazy val variant: Parser[Variant] = here ~ name ~ opt(enclosed("(", commaList(fieldDecl), ")")) ^^ (match
+        ((at, n), Some((_, fs))) -> Variant(n, fs, at)
+        ((at, n), None) -> Variant(n, [], at))
+
+    lazy val fieldDecl: Parser[FieldDecl] = here ~ name ~ (literal(":") ~> typeRef) ^^ (match ((at, n), t) -> FieldDecl(n, t, at))
+
+    // A declaration.
+    lazy val item: Parser[Item] = fnDecl | typeDecl | openComment[Item]()
+
+## A file
+
+A file is its `module` line, its imports, and its declarations, each on lines of its own.
+
+    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(kw("import") ~! (dottedName <~ lineEnd) ^^ (match (_, n) -> n)) ~ rep(item <~ lineEnd) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports, items, at))
+
+## Running it
+
+    // The module `text` holds, or its first syntax error.
+    parseModule(text: string) -> ParseResult[Module] = Kite.parseAll(sourceFile, text)
+
+    // One expression, as a statement reads it.
+    parseExpr(text: string) -> ParseResult[Expr] = Kite.parseAll(lined.expr, text)
+
+    // One statement.
+    parseStmt(text: string) -> ParseResult[Stmt] = Kite.parseAll(stmt, text)
+
+    // One type.
+    parseType(text: string) -> ParseResult[TypeRef] = Kite.parseAll(typeRef, text)
+
+    // One pattern.
+    parsePattern(text: string) -> ParseResult[Pattern] = Kite.parseAll(pattern, text)

@@ -198,6 +198,23 @@ Each level of nesting is a few calls deep, so the depth a text can nest is bound
 the thread parsing it: a few thousand levels of parentheses on the main thread, more on a thread
 spawned with a larger stack.
 
+## Kite: a demo language
+
+[`examples/kite`](examples/kite) is a small interpreted language, Kite, whose parser is written with
+this library: [`SPEC.md`](examples/kite/SPEC.md) is its grammar, operator table and line-end rule,
+and [`kite/grammar.lavin`](examples/kite/kite/grammar.lavin) is that grammar as a literate Avin
+file. It shows a grammar owning its white space (nested comments, and line ends that end
+statements except inside brackets or after an operator), a string's interpolation as a switch
+between character parsers and token parsers, two modes of one set of expression rules, and errors
+that name the bracket left open: ``expected `)` to close `(` at 3:13``. It is a package of its own,
+so nothing that depends on this library compiles it:
+
+```
+cd examples/kite
+avin test .
+avin run . -- samples/geometry.kite
+```
+
 ## Changes in 0.5.1
 
 `Positional` holds the position itself, in a field, so a node class conforms to it and writes

@@ -1,0 +1,28 @@
+module tests
+
+// Each entry point's result as one line: the tree printed as S-expressions, or `failure` or `error`
+// with the line and column and the message.
+import dev.avinlang.parsing.{Error, Failure, ParseResult, Success}
+import kite.{parseExpr, parseModule, parsePattern, parseStmt, parseType, show, showModule, showPattern, showStmt, showType}
+
+shown[T](r: ParseResult[T], f: T -> string) -> string = r match
+    Success(v, _) -> f(v)
+    Failure(m, n) -> s"failure ${n.pos()}: $m"
+    Error(m, n) -> s"error ${n.pos()}: $m"
+
+// An expression, read as a statement reads it.
+expr(text: string) -> string = shown(parseExpr(text), show)
+
+stmt(text: string) -> string = shown(parseStmt(text), showStmt)
+
+typ(text: string) -> string = shown(parseType(text), showType)
+
+pat(text: string) -> string = shown(parsePattern(text), showPattern)
+
+file(text: string) -> string = shown(parseModule(text), showModule)
+
+// `body` as the statements of a function in a module, printed as that function's body; an error
+// as `file` shows it.
+body(text: string) -> string = parseModule("module m\nfn f() {\n" + text + "\n}") match
+    Success(m, _) -> showModule(m).stripPrefix("(module m)\n(fn f () (block").stripSuffix(")").stripSuffix(")").trim()
+    r -> shown(r, showModule)

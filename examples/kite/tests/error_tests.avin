@@ -1,0 +1,67 @@
+module tests
+
+// A missing closing bracket is reported against the bracket it would close, with that bracket's
+// line and column; an error inside the brackets that got further is reported as itself. Every kind of
+// bracket is checked: a group, a call, an index, an array, a block, a match's arms, a record type, a
+// parameter list, a variant's fields, an array type, an interpolation and a string.
+
+@test("each kind of bracket names its opening one when its closing one is missing")
+unclosedBrackets()
+    assertEq(expr("(a + b"), "error 1:7: expected operator or `)` to close `(` at 1:1, found end of input")
+    assertEq(expr("f(a, b"), "error 1:7: expected operator, `,` or `)` to close `(` at 1:2, found end of input")
+    assertEq(expr("xs[i"), "error 1:5: expected operator or `]` to close `[` at 1:3, found end of input")
+    assertEq(expr("[1, 2"), "error 1:6: expected operator, `,` or `]` to close `[` at 1:1, found end of input")
+    // The end of the text ends the statement as a line end would, so the block lacks only its `}`.
+    assertEq(expr("{ a"), "error 1:4: expected operator, statement or `}` to close `{` at 1:1, found end of input")
+    assertEq(expr("{ a b"), "error 1:5: expected operator, end of line or `}`, found 'b'")
+    assertEq(expr("match x { _ => 1"), "error 1:17: expected operator, `,`, pattern or `}` to close `{` at 1:9, found end of input")
+    assertEq(file("module m\ntype P = { x: f64"), "error 2:18: expected `,` or `}` to close `{` at 2:10, found end of input")
+    assertEq(file("module m\nfn f(a: i64 { }"), "error 2:13: expected `,` or `)` to close `(` at 2:5, found '{'")
+    assertEq(file("module m\ntype S = | A(x: i64"), "error 2:20: expected `,` or `)` to close `(` at 2:13, found end of input")
+    assertEq(typ("[[i64; 2]; 3"), "error 1:13: expected `]` to close `[` at 1:1, found end of input")
+    assertEq(expr("\"a {b c\""), "error 1:7: expected operator or `}` to close `{` at 1:4, found 'c'")
+    assertEq(expr("\"abc"), "error 1:5: expected `\"` to close the string at 1:1, found end of input")
+
+@test("the closing bracket's line and column are those of the opening one, however far away")
+farAway()
+    assertEq(file("module m\nfn f() {\n    let x = (1 +\n        2\n    let y = 3\n}"), "error 5:5: expected operator or `)` to close `(` at 3:13, found 'l'")
+    assertEq(file("module m\nfn f() {\n    g(1,\n      2,\n      3\n}"), "error 6:1: expected operator, `,` or `)` to close `(` at 3:6, found '}'")
+    assertEq(file("module m\nfn f() {\n    if c {\n        a\n\nfn g() { }"), "error 6:1: expected statement or `}` to close `{` at 3:10, found 'f'")
+    assertEq(file("module m\nfn f() {\n    a\n"), "error 4:1: expected statement or `}` to close `{` at 2:8, found end of input")
+
+@test("a nested bracket left open is reported against the innermost one")
+innermost()
+    assertEq(expr("((a)"), "error 1:5: expected operator or `)` to close `(` at 1:1, found end of input")
+    assertEq(expr("((a"), "error 1:4: expected operator or `)` to close `(` at 1:2, found end of input")
+    assertEq(expr("f(g(x)"), "error 1:7: expected operator, `,` or `)` to close `(` at 1:2, found end of input")
+    assertEq(expr("f(g(x, y)"), "error 1:10: expected operator, `,` or `)` to close `(` at 1:2, found end of input")
+    assertEq(expr("[(a]"), "error 1:4: expected operator or `)` to close `(` at 1:2, found ']'")
+    assertEq(expr("([a)"), "error 1:4: expected operator, `;`, `,` or `]` to close `[` at 1:2, found ')'")
+    assertEq(expr("{ (a }"), "error 1:6: expected operator or `)` to close `(` at 1:3, found '}'")
+
+@test("an error inside the brackets that got further is reported as itself")
+deeperError()
+    assertEq(expr("f(a +)"), "error 1:6: expected expression, found ')'")
+    assertEq(expr("(a + * b)"), "failure 1:6: expected expression, found '*'")
+    assertEq(expr("f(n: )"), "error 1:6: expected expression, found ')'")
+    assertEq(expr("f(n: 1, m)"), "(call f n: 1 m)")
+    assertEq(expr("f(n)"), "(call f n)")
+    assertEq(expr("[1, 2 +]"), "error 1:8: expected expression, found ']'")
+    assertEq(expr("xs[]"), "failure 1:4: expected expression, found ']'")
+    assertEq(expr("{ let = 1 }"), "error 1:7: expected name, found '='")
+
+@test("a stray closing bracket is an error where it stands")
+strayClosing()
+    assertEq(expr(")"), "failure 1:1: expected expression, found ')'")
+    assertEq(expr("a)"), "failure 1:2: expected operator or end of input, found ')'")
+    assertEq(expr("a]"), "failure 1:2: expected operator or end of input, found ']'")
+    assertEq(body("a }"), "failure 4:1: expected `fn`, `type` or end of input, found '}'")
+    assertEq(file("module m\n}"), "failure 2:1: expected `import`, `fn`, `type` or end of input, found '}'")
+
+@test("an empty expression is an error naming what could begin one")
+emptyExpression()
+    assertEq(expr(""), "failure 1:1: expected expression, found end of input")
+    assertEq(expr("   "), "failure 1:4: expected expression, found end of input")
+    assertEq(expr("a +"), "failure 1:4: expected expression, found end of input")
+    assertEq(expr("a + )"), "failure 1:5: expected expression, found ')'")
+    assertEq(stmt(""), "failure 1:1: expected statement, found end of input")

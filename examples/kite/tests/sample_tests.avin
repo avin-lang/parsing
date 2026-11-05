@@ -1,0 +1,23 @@
+module tests
+
+// Every sample program parses, to the tree its `.ast` file holds.
+import avin.fs
+import kite.{parseModule, showModule}
+
+// The text of the file at `name`, under the package's directory.
+read(name: string) -> string = fs.readText(name).getOrElse(s"cannot read $name")
+
+@test("each sample parses to its tree")
+samples()
+    for name in ["arrays", "geometry", "loops", "strings"]
+        val r = parseModule(read(s"samples/$name.kite"))
+        assert(r.successful(), s"$name.kite: $r")
+        assertEq(showModule(r.get()) + "\n", read(s"samples/$name.ast"))
+
+@test("the specification's examples say what the parser does")
+specExamples()
+    val example = "module geometry\n\ntype Shape =\n    | Circle(r: f64)\n    | Rect(w: f64, h: f64)\n\nfn area(s: Shape) -> f64 {\n    match s {\n        Circle(r) => 3.14159 * r * r\n        Rect(w, h) => w * h\n    }\n}\n\nfn main() {\n    let shapes = [Circle(r: 1.0), Rect(w: 2.0, h: 3.0)]\n    for i in 0..2 {\n        print(\"shape {i} has area {area(shapes[i])}\")\n    }\n}\n"
+    assertEq(file(example), "(module geometry)\n(type Shape (sum (Circle (r f64)) (Rect (w f64) (h f64))))\n(fn area ((s Shape)) -> f64 (block (match s ((Circle r) (* (* 3.14159 r) r)) ((Rect w h) (* w h)))))\n(fn main () (block (let shapes (array (call Circle r: 1.0) (call Rect w: 2.0 h: 3.0))) (for i (.. 0 2) (block (call print (str \"shape \" i \" has area \" (call area (index shapes i))))))))")
+    assertEq(file("module bad\nfn f() {\n    let x = (1 +\n        2\n}\n"), "error 5:1: expected operator or `)` to close `(` at 3:13, found '}'")
+    assertEq(expr("-9223372036854775807 - 1"), "(- (- 9223372036854775807) 1)")
+    assertEq(expr("0..n + 1"), "(.. 0 (+ n 1))")

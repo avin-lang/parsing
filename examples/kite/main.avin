@@ -1,0 +1,27 @@
+// Parses a Kite source file and prints its syntax tree, one declaration to a line, or its syntax
+// error as `file:line:column: message`, ending with status 1.
+//
+//     avin run examples/kite -- examples/kite/samples/geometry.kite
+import avin.fs
+import avin.process.{args, exit}
+import dev.avinlang.parsing.{Error, Failure, Success}
+import kite.{parseModule, showModule}
+
+main()
+    val given = args()
+    if given.length() != 1
+        eprintln("usage: kite <file.kite>")
+        exit(2)
+    val file = given(0)
+    fs.readText(file) match
+        Err(e) ->
+            eprintln(s"$file: $e")
+            exit(1)
+        Ok(text) -> parseModule(text) match
+            Success(m, _) -> println(showModule(m))
+            Failure(msg, next) ->
+                eprintln(s"$file:${next.pos()}: $msg")
+                exit(1)
+            Error(msg, next) ->
+                eprintln(s"$file:${next.pos()}: $msg")
+                exit(1)

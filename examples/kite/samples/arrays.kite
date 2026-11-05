@@ -1,0 +1,38 @@
+module arrays
+
+type Grid = [[i64; 3]; 3]
+
+type Stats = {
+    min: i64,
+    max: i64,
+    mean: f64,
+}
+
+fn stats(xs: [i64; 5]) -> Stats {
+    var lo = xs[0]
+    var hi = xs[0]
+    var sum = 0
+    for i in 0..5 {
+        let x = xs[i]
+        if x < lo { lo = x }
+        if x > hi { hi = x }
+        sum += x
+    }
+    Stats(min: lo, max: hi, mean: f64(sum) / 5.0)
+}
+
+fn identity() -> Grid {
+    var g = [[0; 3]; 3]
+    for i in 0..3 {
+        g[i][i] = 1
+    }
+    g
+}
+
+fn main() {
+    let s = stats([3, 1, 4, 1, 5])
+    print("min {s.min}, max {s.max}, mean {s.mean}")
+    let g = identity()
+    let flags = [true, false, !true]
+    print("trace {g[0][0] + g[1][1] + g[2][2]}, flags {flags[2]}")
+}

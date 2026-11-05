@@ -1,0 +1,111 @@
+module tests
+
+// The newline rule: a line end ends a statement, except inside `(`, `[`, a record type's `{` and an
+// interpolation's `{…}`, and after an operator or a comma. An operator, `(`, `[` or `.` that begins a
+// line begins a new statement, which for a binary operator is an error saying where to put it.
+
+// What a statement that begins with a binary operator expects.
+val leading = "statement: an operator after a line end does not continue the line above, so end that line with it"
+
+@test("a line end ends a statement")
+lineEndsStatement()
+    assertEq(body("a\nb"), "a b")
+    assertEq(body("a\n\n\nb"), "a b")
+    assertEq(body("let x = 1\nlet y = 2"), "(let x 1) (let y 2)")
+    assertEq(body("  a  \n  b  "), "a b")
+    assertEq(body("a\r\nb"), "a b")
+    assertEq(body(""), "")
+    assertEq(body("\n\n"), "")
+
+@test("two statements on one line are an error at the second")
+twoOnALine()
+    assertEq(body("a b"), "error 3:3: expected operator, end of line or `}`, found 'b'")
+    assertEq(body("let x = 1 let y = 2"), "error 3:11: expected operator, end of line or `}`, found 'l'")
+    assertEq(body("a; b"), "error 3:2: expected operator, end of line or `}`, found ';'")
+    assertEq(body("x = 1 2"), "error 3:7: expected operator, end of line or `}`, found '2'")
+    assertEq(body("a /* a comment */ b"), "error 3:19: expected operator, end of line or `}`, found 'b'")
+    assertEq(body("return 1 2"), "error 3:10: expected operator, end of line or `}`, found '2'")
+    assertEq(body("break 2"), "error 3:7: expected end of line or `}`, found '2'")
+
+@test("an operator at the end of a line continues the expression")
+operatorAtLineEnd()
+    for op in ["||", "&&", "==", "!=", "<", "<=", ">", ">=", "..", "..=", "+", "-", "*", "/", "%"]
+        assertEq(expr(s"a $op\nb").stripPrefix(s"($op ").stripPrefix("(.. ").stripPrefix("(..= "), "a b)")
+    assertEq(body("let x = 1 +\n    2 +\n    3"), "(let x (+ (+ 1 2) 3))")
+    assertEq(body("let x =\n    3"), "(let x 3)")
+    assertEq(body("x +=\n    3"), "(+= x 3)")
+    assertEq(body("a &&\n\n  // a comment between\n  b"), "(&& a b)")
+
+@test("an operator at the start of a line begins a new statement, and is an error")
+operatorAtLineStart()
+    assertEq(body("a\n- b"), "a (- b)")
+    assertEq(body("a\n!b"), "a (! b)")
+    for op in ["||", "&&", "==", "!=", "<", ">", "+", "*", "/", "%", "..", "=", "+=", "."]
+        assertEq(body(s"a\n$op b"), s"error 4:1: expected $leading, found '${op.take(1)}'")
+    assertEq(body("let x = 1\n    + 2"), s"error 4:5: expected $leading, found '+'")
+    assertEq(body("let x = 1 // one\n    + 2"), s"error 4:5: expected $leading, found '+'")
+
+@test("a call, an index or a field on the next line does not continue the line above")
+suffixAtLineStart()
+    assertEq(body("f\n(x)"), "f x")
+    assertEq(body("xs\n[0]"), "xs (array 0)")
+    assertEq(body("f(x)\n(y)"), "(call f x) y")
+    assertEq(body("a\n.b"), s"error 4:1: expected $leading, found '.'")
+
+@test("inside brackets a line end is white space")
+insideBrackets()
+    assertEq(expr("(a\n+ b)"), "(+ a b)")
+    assertEq(expr("(a\n\n+\n\nb)"), "(+ a b)")
+    assertEq(expr("f(\n  a,\n  b\n)"), "(call f a b)")
+    assertEq(expr("f(\n  a\n  , b\n)"), "(call f a b)")
+    assertEq(expr("f(a\n)(b)"), "(call (call f a) b)")
+    assertEq(expr("xs[\n  i\n  + 1\n]"), "(index xs (+ i 1))")
+    assertEq(expr("[\n  1,\n  2,\n]"), "(array 1 2)")
+    assertEq(expr("[1\n, 2]"), "(array 1 2)")
+    assertEq(expr("(a\n.b)"), "(. a b)")
+    assertEq(expr("(f\n(x))"), "(call f x)")
+    assertEq(expr("(a\n< b)"), "(< a b)")
+    assertEq(expr("(a..\nb)"), "(.. a b)")
+    assertEq(expr("\"{a\n+ b}\""), "(str (+ a b))")
+    assertEq(file("module m\ntype P = {\n  x: f64\n  ,\n  y: f64\n}"), "(module m)\n(type P (record (x f64) (y f64)))")
+
+@test("a block inside brackets holds statements again")
+blockInsideBrackets()
+    assertEq(expr("f({\n  a\n  b\n})"), "(call f (block a b))")
+    assertEq(expr("f({\n  a\n  - b\n})"), "(call f (block a (- b)))")
+    assertEq(expr("(if c {\n  a\n  b\n} else {\n  d\n})"), "(if c (block a b) (block d))")
+    assertEq(expr("[match x {\n  0 => a\n  _ => b\n}]"), "(array (match x (0 a) (_ b)))")
+
+@test("a comma, an opening bracket or an arrow may end a line")
+afterCommaOrArrow()
+    assertEq(expr("match x {\n  0 =>\n    a\n  _ =>\n    b\n}"), "(match x (0 a) (_ b))")
+    assertEq(expr("match x { 0 => a,\n _ => b }"), "(match x (0 a) (_ b))")
+    assertEq(file("module m\nfn f(\n  a: i64,\n  b: i64,\n) -> i64 { a }"), "(module m)\n(fn f ((a i64) (b i64)) -> i64 (block a))")
+
+@test("the parts of a statement that are not an expression may be on lines of their own")
+statementParts()
+    assertEq(body("if a {\n  b\n}\nelse {\n  c\n}"), "(if a (block b) (block c))")
+    assertEq(body("if a { b }\nelse if c { d }\nelse { e }"), "(if a (block b) (if c (block d) (block e)))")
+    assertEq(body("while c\n{\n  x\n}"), "(while c (block x))")
+    assertEq(body("for i\nin 0..n\n{ }"), "(for i (.. 0 n) (block))")
+    assertEq(file("module m\nfn f()\n  -> i64\n{\n  1\n}"), "(module m)\n(fn f () -> i64 (block 1))")
+    assertEq(file("module m\ntype S\n  =\n  | A\n  | B"), "(module m)\n(type S (sum (A) (B)))")
+
+@test("return at the end of a line returns nothing")
+returnAtLineEnd()
+    assertEq(body("return\nx"), "(return) x")
+    assertEq(body("return x"), "(return x)")
+    assertEq(body("return"), "(return)")
+    assertEq(body("if c { return }"), "(if c (block (return)))")
+    assertEq(body("return x +\n  y"), "(return (+ x y))")
+
+@test("comments are white space, and a line end in a comment's span still ends the statement")
+commentsAndLines()
+    assertEq(body("a // one\nb // two"), "a b")
+    assertEq(body("a /* inline */ + b"), "(+ a b)")
+    assertEq(body("a /* one */ /* two */ + b"), "(+ a b)")
+    assertEq(body("a /* spans\nlines */ b"), "a b")
+    assertEq(body("a /* spans\nlines */ + b"), s"error 4:10: expected $leading, found '+'")
+    assertEq(body("a // + b\n+ c"), s"error 4:1: expected $leading, found '+'")
+    assertEq(body("f /*\n*/ (x)"), "f x")
+    assertEq(body("a + // continued\n b"), "(+ a b)")

@@ -1,0 +1,114 @@
+module kite
+
+// The syntax tree printed as S-expressions: one parenthesised form per node, the operator or keyword
+// first, so grouping is visible at a glance. `1 + 2 * 3` prints as `(+ 1 (* 2 3))`.
+
+// A string in Kite's own spelling: quoted, with its quotes, backslashes, braces and control
+// characters escaped.
+quoted(text: string) -> string
+    val out = StringWriter()
+    out.write("\"")
+    for c in text.chars()
+        if c == '"' then out.write("\\\"")
+        elif c == '\\' then out.write("\\\\")
+        elif c == '{' then out.write("\\{")
+        elif c == '}' then out.write("\\}")
+        elif c == '\n' then out.write("\\n")
+        elif c == '\t' then out.write("\\t")
+        elif c == '\r' then out.write("\\r")
+        elif c == '\u{0}' then out.write("\\0")
+        else out.write(s"$c")
+    out.write("\"")
+    out.text()
+
+// A float as written, always with a point or an exponent so that it never reads as an integer.
+floatText(x: real) -> string
+    val t = s"$x"
+    if t.contains(".") || t.contains("e") || t.contains("E") || t.contains("n") then t else t + ".0"
+
+showType(t: TypeRef) -> string = t match
+    NamedType(n, _) -> n
+    ArrayType(e, size, _) -> s"[${showType(e)}; $size]"
+
+showPattern(p: Pattern) -> string = p match
+    WildPat(_) -> "_"
+    IntPat(v, _) -> s"$v"
+    FloatPat(v, _) -> floatText(v)
+    StrPat(t, _) -> quoted(t)
+    BoolPat(v, _) -> s"$v"
+    NamePat(n, _) -> n
+    VariantPat(n, fields, _) -> if fields.isEmpty() then s"($n)" else s"($n ${fields.map(showPattern).mkString(" ")})"
+
+private showPart(p: StrPart) -> string = p match
+    Text(t) -> quoted(t)
+    Interp(e) -> show(e)
+
+private showArg(a: Arg) -> string = a.name match
+    Some(n) -> s"$n: ${show(a.value)}"
+    None -> show(a.value)
+
+// Forms after a head, each preceded by a space.
+private tail(forms: List[string]) -> string = forms.map(f -> " " + f).mkString("")
+
+show(e: Expr) -> string = e match
+    IntLit(v, _) -> s"$v"
+    FloatLit(v, _) -> floatText(v)
+    BoolLit(v, _) -> s"$v"
+    StrLit(parts, _) -> parts match
+        Nil -> "\"\""
+        Cons(Text(t), Nil) -> quoted(t)
+        _ -> s"(str${tail(parts.map(showPart))})"
+    Name(n, _) -> n
+    ArrayLit(items, _) -> s"(array${tail(items.map(show))})"
+    ArrayRepeat(item, count, _) -> s"(array-repeat ${show(item)} ${show(count)})"
+    Unary(op, x, _) -> s"($op ${show(x)})"
+    Binary(op, l, r, _) -> s"($op ${show(l)} ${show(r)})"
+    RangeExpr(l, h, inclusive, _) -> s"(${if inclusive then "..=" else ".."} ${show(l)} ${show(h)})"
+    Call(f, args, _) -> s"(call ${show(f)}${tail(args.map(showArg))})"
+    Index(t, i, _) -> s"(index ${show(t)} ${show(i)})"
+    Field(t, n, _) -> s"(. ${show(t)} $n)"
+    BlockExpr(stmts, _) -> s"(block${tail(stmts.map(showStmt))})"
+    If(c, t, o, _) -> o match
+        Some(x) -> s"(if ${show(c)} ${show(t)} ${show(x)})"
+        None -> s"(if ${show(c)} ${show(t)})"
+    Match(x, arms, _) -> s"(match ${show(x)}${tail(arms.map(a -> s"(${showPattern(a.pattern)} ${show(a.body)})"))})"
+
+showStmt(s: Stmt) -> string = s match
+    Let(mutable, n, declared, v, _) ->
+        val kw = if mutable then "var" else "let"
+        declared match
+            Some(t) -> s"($kw $n ${showType(t)} ${show(v)})"
+            None -> s"($kw $n ${show(v)})"
+    Assign(op, t, v, _) -> s"($op ${show(t)} ${show(v)})"
+    ExprStmt(e) -> show(e)
+    While(c, b, _) -> s"(while ${show(c)} ${show(b)})"
+    For(n, over, b, _) -> s"(for $n ${show(over)} ${show(b)})"
+    Return(v, _) -> v match
+        Some(x) -> s"(return ${show(x)})"
+        None -> "(return)"
+    Break(_) -> "(break)"
+    Continue(_) -> "(continue)"
+
+private showField(f: FieldDecl) -> string = s"(${f.name} ${showType(f.declared)})"
+
+showItem(i: Item) -> string = i match
+    FnDecl(n, params, result, body, _) ->
+        val ps = params.map(p -> s"(${p.name} ${showType(p.declared)})").mkString(" ")
+        val r = result match
+            Some(t) -> s" -> ${showType(t)}"
+            None -> ""
+        s"(fn $n ($ps)$r ${show(body)})"
+    TypeDecl(n, d, _) -> d match
+        Alias(t) -> s"(type $n (alias ${showType(t)}))"
+        Record(fields) -> s"(type $n (record${tail(fields.map(showField))}))"
+        Sum(variants) -> s"(type $n (sum${tail(variants.map(v -> s"(${v.name}${tail(v.fields.map(showField))})"))}))"
+
+// A module, one form to a line: the header, each import, each declaration.
+showModule(m: Module) -> string
+    val out = StringWriter()
+    out.write(s"(module ${m.name})")
+    for i in m.imports
+        out.write(s"\n(import $i)")
+    for item in m.items
+        out.write("\n" + showItem(item))
+    out.text()

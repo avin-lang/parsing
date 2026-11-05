@@ -1,0 +1,57 @@
+module tests
+
+// Every node keeps the line and column it begins at, the column in characters; a binary operation's
+// is its operator's, and a call's, an index's and a field's is that of its `(`, `[` or `.`.
+import dev.avinlang.parsing.Success
+import kite.{Binary, Call, Expr, Field, FnDecl, Index, Name, StrLit, TypeDecl, Unary, parseExpr, parseModule}
+
+// The position of an expression's node, as `line:column`.
+at(e: Expr) -> string = e match
+    Binary(_, _, _, p) -> s"$p"
+    Call(_, _, p) -> s"$p"
+    Index(_, _, p) -> s"$p"
+    Field(_, _, p) -> s"$p"
+    Unary(_, _, p) -> s"$p"
+    Name(_, p) -> s"$p"
+    StrLit(_, p) -> s"$p"
+    _ -> "?"
+
+// The positions of `text`'s node and of its operands, outermost first.
+spots(text: string) -> string = parseExpr(text) match
+    Success(e, _) -> e match
+        Binary(_, l, r, p) -> s"$p ${at(l)} ${at(r)}"
+        Call(f, _, p) -> s"$p ${at(f)}"
+        Index(t, i, p) -> s"$p ${at(t)} ${at(i)}"
+        Field(t, _, p) -> s"$p ${at(t)}"
+        Unary(_, x, p) -> s"$p ${at(x)}"
+        other -> at(other)
+    r -> s"$r"
+
+@test("an expression's nodes are positioned at their operator or bracket")
+expressionPositions()
+    assertEq(spots("a + b"), "1:3 1:1 1:5")
+    assertEq(spots("  a   *   b"), "1:7 1:3 1:11")
+    assertEq(spots("f(x)"), "1:2 1:1")
+    assertEq(spots("xs[i]"), "1:3 1:1 1:4")
+    assertEq(spots("p.x"), "1:2 1:1")
+    assertEq(spots("-a"), "1:1 1:2")
+    assertEq(spots("\"s\""), "1:1")
+    assertEq(spots("(a +\n  b)"), "1:4 1:2 2:3")
+
+@test("a column counts characters, not bytes")
+unicodeColumns()
+    assertEq(spots("größe + 名前"), "1:7 1:1 1:9")
+    assertEq(spots("\"😀\" + x"), "1:5 1:1 1:7")
+    assertEq(spots("/* é */ a"), "1:9")
+
+@test("declarations and statements are positioned at their keyword")
+declarationPositions()
+    parseModule("module m\n\n  fn f() {\n    let x = 1\n  }\ntype T = i64") match
+        Success(m, _) ->
+            assertEq(s"${m.at}", "1:1")
+            m.items match
+                [FnDecl(_, _, _, _, p), TypeDecl(_, _, q)] ->
+                    assertEq(s"$p", "3:3")
+                    assertEq(s"$q", "6:1")
+                _ -> fail("two declarations")
+        r -> fail(s"$r")

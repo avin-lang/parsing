@@ -1,0 +1,50 @@
+module geometry
+
+import math
+
+// Points and shapes, and a match over every kind of shape.
+type Point = { x: f64, y: f64 }
+
+type Shape =
+    | Circle(center: Point, r: f64)
+    | Rect(corner: Point, w: f64, h: f64)
+    | Triangle(a: Point, b: Point, c: Point)
+    | Empty
+
+fn area(s: Shape) -> f64 {
+    match s {
+        Circle(_, r) => 3.141592653589793 * r * r
+        Rect(_, w, h) => w * h
+        Triangle(a, b, c) => {
+            // An operator that ends a line continues the expression onto the next.
+            let twice = (b.x - a.x) * (c.y - a.y) -
+                (c.x - a.x) * (b.y - a.y)
+            math.abs(twice) / 2.0
+        }
+        Empty => 0.0
+    }
+}
+
+fn describe(s: Shape) -> string {
+    let kind = match s { Circle(_, _) => "circle", Rect(_, _, _) => "rectangle", _ => "other" }
+    "a {kind} of area {area(s)}"
+}
+
+fn main() {
+    let origin = Point(x: 0.0, y: 0.0)
+    let shapes = [
+        Circle(center: origin, r: 1.5),
+        Rect(corner: origin, w: 2.0, h: 3.0),
+        Triangle(a: origin, b: Point(x: 4.0, y: 0.0), c: Point(x: 0.0, y: 3.0)),
+    ]
+    var total = 0.0
+    for i in 0..3 {
+        total += area(shapes[i])
+        print(describe(shapes[i]))
+    }
+    if total > 10.0 && total < 1e3 {
+        print("large: {total}")
+    } else {
+        print("small: {total}")
+    }
+}

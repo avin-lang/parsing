@@ -1,0 +1,49 @@
+module loops
+
+/* Factorials three ways: a loop, recursion, and a fold over a range.
+   /* Block comments nest, so this one stays a comment. */ */
+
+fn factorial(n: i64) -> i64 {
+    var result = 1
+    var i = 2
+    while i <= n {
+        result *= i
+        i += 1
+    }
+    result
+}
+
+fn recursive(n: i64) -> i64 {
+    if n <= 1 { 1 } else { n * recursive(n - 1) }
+}
+
+fn sumTo(n: i64) -> i64 {
+    var total = 0
+    for k in 1..=n {
+        if k % 2 == 0 { continue }
+        total += k
+        if total > 1000 { break }
+    }
+    return total
+}
+
+fn collatz(start: i64) -> i64 {
+    var n = start
+    var steps = 0
+    while n != 1 {
+        n = match n % 2 {
+            0 => n / 2
+            _ => 3 * n + 1
+        }
+        steps += 1
+    }
+    steps
+}
+
+fn main() {
+    for n in 0..10 {
+        print("{n}! = {factorial(n)} = {recursive(n)}")
+    }
+    print("odd numbers to 99 add up to {sumTo(99)}")
+    print("27 takes {collatz(27)} steps")
+}

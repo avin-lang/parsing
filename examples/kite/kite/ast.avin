@@ -1,0 +1,93 @@
+module kite
+
+// Kite's syntax tree: what the parser builds and what a checker and an evaluator read. Every node
+// that a later message can point at carries `at`, the line and column it begins at; a binary
+// operation's is its operator's.
+import dev.avinlang.parsing.Position
+
+// A type as written: a name (`i64`, `Shape`) or a fixed array, `[T; n]`.
+data TypeRef
+    NamedType(name: string, at: Position)
+    ArrayType(element: TypeRef, size: long, at: Position)
+
+// A piece of a string literal: text, with its escapes already decoded, or an interpolated
+// expression.
+data StrPart
+    Text(text: string)
+    Interp(expr: Expr)
+
+// An argument of a call, named (`P(x: 1.0)`) or not.
+data Arg(name: Option[string], value: Expr)
+
+// What a `match` arm compares its value against.
+data Pattern
+    // `_`: anything, binding nothing.
+    WildPat(at: Position)
+    IntPat(value: long, at: Position)
+    FloatPat(value: real, at: Position)
+    StrPat(text: string, at: Position)
+    BoolPat(value: bool, at: Position)
+    // A lone name: a binding, or a variant without fields, which the checker tells apart.
+    NamePat(name: string, at: Position)
+    // A variant and patterns for its fields: `Circle(r)`, `Rect(w, _)`.
+    VariantPat(name: string, fields: List[Pattern], at: Position)
+
+// One arm of a `match`: a pattern and the expression its value is.
+data Arm(pattern: Pattern, body: Expr)
+
+data Expr
+    IntLit(value: long, at: Position)
+    FloatLit(value: real, at: Position)
+    BoolLit(value: bool, at: Position)
+    StrLit(parts: List[StrPart], at: Position)
+    Name(name: string, at: Position)
+    // `[a, b, c]`.
+    ArrayLit(items: List[Expr], at: Position)
+    // `[item; count]`: `count` copies of `item`.
+    ArrayRepeat(item: Expr, count: Expr, at: Position)
+    // `-x`, `!x`.
+    Unary(op: string, operand: Expr, at: Position)
+    // Every binary operator but the ranges; `at` is the operator's position.
+    Binary(op: string, left: Expr, right: Expr, at: Position)
+    // `a..b` (`inclusive` false) and `a..=b`.
+    RangeExpr(low: Expr, high: Expr, inclusive: bool, at: Position)
+    Call(callee: Expr, args: List[Arg], at: Position)
+    Index(target: Expr, index: Expr, at: Position)
+    Field(target: Expr, name: string, at: Position)
+    // `{ … }` as a value: its last statement's, when that is an expression.
+    BlockExpr(stmts: List[Stmt], at: Position)
+    // `else` is a block or another `if`.
+    If(cond: Expr, thenBranch: Expr, otherwise: Option[Expr], at: Position)
+    Match(scrutinee: Expr, arms: List[Arm], at: Position)
+
+data Stmt
+    // `let` (`mutable` false) and `var`.
+    Let(mutable: bool, name: string, declared: Option[TypeRef], value: Expr, at: Position)
+    // `=` and the compound assignments, `op` being `=`, `+=`, `-=`, `*=`, `/=` or `%=`.
+    Assign(op: string, target: Expr, value: Expr, at: Position)
+    ExprStmt(expr: Expr)
+    While(cond: Expr, body: Expr, at: Position)
+    For(name: string, over: Expr, body: Expr, at: Position)
+    Return(value: Option[Expr], at: Position)
+    Break(at: Position)
+    Continue(at: Position)
+
+data Param(name: string, declared: TypeRef, at: Position)
+
+// A field of a record, or of a variant of a sum type.
+data FieldDecl(name: string, declared: TypeRef, at: Position)
+
+data Variant(name: string, fields: List[FieldDecl], at: Position)
+
+// What a `type` declaration says the name is.
+data TypeDef
+    Alias(target: TypeRef)
+    Record(fields: List[FieldDecl])
+    Sum(variants: List[Variant])
+
+data Item
+    FnDecl(name: string, params: List[Param], result: Option[TypeRef], body: Expr, at: Position)
+    TypeDecl(name: string, definition: TypeDef, at: Position)
+
+// A source file: its module's name, what it imports, and its declarations.
+data Module(name: string, imports: List[string], items: List[Item], at: Position)

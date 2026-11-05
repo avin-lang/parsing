@@ -1,0 +1,5 @@
+(module strings)
+(fn greet ((name string) (times i64)) -> string (block (str "Hello, " name "! (" times " " (if (== times 1) (block "time") (block "times")) ")")))
+(fn quote ((s string)) -> string (block (str "\"" s "\" has braces \{like this\} and a tab:\there")))
+(fn label ((n i64)) -> string (block (match n (0 "zero") (1 "one") (-1 "minus one") (_ (str "many: " n)))))
+(fn main () (block (let größe 3) (let 名前 "世界") (call print (call greet 名前 größe)) (call print (call quote (str "nested " (str "strings " "too")))) (call print "snowman: ☃, smile: 😀, newline next\n") (call print (+ (+ (call label (- 1)) ", ") (call label größe)))))

@@ -1,0 +1,6 @@
+(module arrays)
+(type Grid (alias [[i64; 3]; 3]))
+(type Stats (record (min i64) (max i64) (mean f64)))
+(fn stats ((xs [i64; 5])) -> Stats (block (var lo (index xs 0)) (var hi (index xs 0)) (var sum 0) (for i (.. 0 5) (block (let x (index xs i)) (if (< x lo) (block (= lo x))) (if (> x hi) (block (= hi x))) (+= sum x))) (call Stats min: lo max: hi mean: (/ (call f64 sum) 5.0))))
+(fn identity () -> Grid (block (var g (array-repeat (array-repeat 0 3) 3)) (for i (.. 0 3) (block (= (index (index g i) i) 1))) g))
+(fn main () (block (let s (call stats (array 3 1 4 1 5))) (call print (str "min " (. s min) ", max " (. s max) ", mean " (. s mean))) (let g (call identity)) (let flags (array true false (! true))) (call print (str "trace " (+ (+ (index (index g 0) 0) (index (index g 1) 1)) (index (index g 2) 2)) ", flags " (index flags 2)))))
