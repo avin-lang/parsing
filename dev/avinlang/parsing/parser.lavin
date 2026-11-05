@@ -573,7 +573,8 @@ value, and leaves the offset where it was.
 
 `not(p)` succeeds where `p` fails: `if` followed by a letter is the start of a name like
 `iffy`, not the keyword. It restores the commit flag too, since a commit inside a look ahead commits
-nothing outside it.
+nothing outside it, and nothing `p` expects is recorded: in `if)`, the letter that would have made
+`if` a name is no part of what the text lacks.
 
     // Succeeds without reading anything where `p` fails, and fails where `p` succeeds.
     not[T](p: -> Parser[T]) -> Parser[unit]
@@ -581,7 +582,9 @@ nothing outside it.
         Parser(input ->
             val start = input.offset
             val committed = input.committed
+            input.lookingAhead += 1
             val r = q.run(input)
+            input.lookingAhead -= 1
             input.offset = start
             input.committed = committed
             if r is None then Some(()) else None)

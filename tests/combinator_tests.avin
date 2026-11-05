@@ -112,6 +112,23 @@ lookAhead()
     assertEq(all(guard(literal("a")) ~> literal("ab"), "ab"), "ab")
     assertEq(all(guard(literal("b")) ~> literal("ab"), "ab"), "failure 1:1: expected `b`, found 'a'")
 
+@test("what the parser inside a not expected is no part of the message")
+lookAheadQuiet()
+    // `if` then a number: the letter `not` refused to see is not what the text lacked.
+    assertEq(all(ifKeyword ~ wholeNumber, "if)"), "failure 1:3: expected whole number, found ')'")
+    assertEq(all(ifKeyword ~ wholeNumber, "if )"), "failure 1:4: expected whole number, found ')'")
+    // At the end of the text too.
+    assertEq(all(ifKeyword ~ wholeNumber, "if"), "failure 1:3: expected whole number, found end of input")
+    // A label inside the look ahead relabels nothing outside it.
+    assertEq(all(literal("a") <~ not(literal("b").withFailureMessage("bee")) ~ wholeNumber, "a)"), "failure 1:2: expected whole number, found ')'")
+    // A not nested in a not is as quiet.
+    assertEq(all(literal("a") <~ not(literal("b") ~ not(literal("c"))) ~ wholeNumber, "a)"), "failure 1:2: expected whole number, found ')'")
+    assertEq(all(literal("a") <~ not(literal("b") ~ not(literal("c"))) ~ wholeNumber, "abc)"), "failure 1:2: expected whole number, found 'b'")
+    // The not's own failure, where its parser succeeds, still says what it found.
+    assertEq(all(literal("a") <~ not(literal("b")), "ab"), "failure 1:2: unexpected 'b'")
+    // A failure the grammar reached before the look ahead is kept.
+    assertEq(all(literal("a") ~ wholeNumber | literal("a") <~ not(literal("b")) ~ literal("c"), "a!"), "failure 1:2: expected whole number or `c`, found '!'")
+
 @test("a positioned value carries its line and its column in characters, after white space")
 positions()
     val located = rep(positioned(ident ^^ (n -> Node(n)))) ^^ (xs -> xs.map(n -> n.where()).mkString(" "))

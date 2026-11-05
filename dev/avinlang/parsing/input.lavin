@@ -126,6 +126,9 @@ the grammar that started the parse, as `RegexParsers` in `parser.lavin` describe
         // Set when a parser fails after a commit point: no alternative is tried after it and the whole
         // parse fails.
         var committed = false
+        // How many `not` look aheads are running: while any is, nothing expected is recorded, since
+        // what a look ahead refuses to see is no part of what the text lacks.
+        var lookingAhead = 0
 
 What has failed furthest, and what was expected there, are private: parsers record a failure with
 `expect` and `fail` below and never read the record back. `known` is the last position the input
@@ -174,12 +177,15 @@ part of what the text got wrong. A white space parser that fails reads nothing.
 
 Every leaf parser that fails says what it wanted. Only the furthest offset's wishes are worth
 keeping, since the text is right up to there: a failure further on replaces them, a failure at the
-same place joins them, and a failure before it is forgotten.
+same place joins them, and a failure before it is forgotten. Nothing is recorded inside a `not`
+either: `if` followed by anything but a letter is the keyword, and the letter `not` looked for is
+not something the text should have had.
 
         // Records that `what` was expected at `offset`. Only the furthest offset's expectations are kept,
-        // since the text is right up to there. Nothing is recorded while white space is skipped.
+        // since the text is right up to there. Nothing is recorded while white space is skipped or a
+        // `not` looks ahead.
         expect(what: string)
-            if skipping then return
+            if skipping || lookingAhead > 0 then return
             if offset > furthest
                 furthest = offset
                 expectations.clear()
@@ -213,7 +219,7 @@ are dropped and the message takes their place.
         // Replaces what was recorded at offset `at` since `mark` (an `expectationsAt(at)` taken before)
         // by `what`: a failure that got no further than `at` is reported under one name.
         relabel(at: int, mark: int, what: string)
-            if furthest != at then return
+            if furthest != at || lookingAhead > 0 then return
             val keep = if mark < 0 then 0 else mark
             while expectations.length() > keep
                 expectations.remove(expectations.length() - 1)
@@ -224,7 +230,7 @@ expected at the furthest place.
 
         // Replaces everything expected at the furthest place reached by `what`.
         reword(what: string)
-            if furthest < 0 then return
+            if furthest < 0 || lookingAhead > 0 then return
             expectations.clear()
             expectations.addOne(what)
 

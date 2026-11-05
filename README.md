@@ -110,7 +110,7 @@ The functions that make a parser of others:
 | `commit(p)` | `p`, whose failure fails the parse | `p`'s |
 | `positioned(p)` | `p`, after white space, its value (a `Positional`) positioned where `p` began unless it already has a position | `p`'s |
 | `guard(p)` | `p`, reading nothing | `p`'s |
-| `not(p)` | nothing, where `p` fails | `()` |
+| `not(p)` | nothing, where `p` fails; what `p` expected is no part of a failure's message | `()` |
 | `phrase(p)` | `p`, then white space, then the end of the text | `p`'s |
 | `log(p, name)` | `p`, printing where it was tried and what it answered | `p`'s |
 | `success(v)` | nothing | `v` |
