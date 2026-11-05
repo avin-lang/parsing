@@ -33,13 +33,8 @@ valueEq(a: Value, b: Value) -> bool = (a, b) match
     (VariantV(n, xs), VariantV(m, ys)) -> n == m && allEq(xs, ys)
     _ -> false
 
-private allEq(xs: Vector[Value], ys: Vector[Value]) -> bool
-    if xs.length() != ys.length() then return false
-    var i = 0
-    while i < xs.length()
-        if !valueEq(xs(i), ys(i)) then return false
-        i += 1
-    true
+private allEq(xs: Vector[Value], ys: Vector[Value]) -> bool =
+    xs.length() == ys.length() && xs.zip(ys).forall(match (x, y) -> valueEq(x, y))
 
 // A value as interpolation writes it: a string as its text, and inside an array, a record or a
 // variant as a quoted literal; a record or a variant with its fields named.

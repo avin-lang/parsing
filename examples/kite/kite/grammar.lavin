@@ -203,7 +203,7 @@ and no piece is worth reporting on its own.
     byteOf(text: string, at: int) -> int = if at < text.byteLength() then int(text.byteAt(at)) else -1
 
     // Whether the byte at `at` is an ASCII digit.
-    digitAt(text: string, at: int) -> bool = byteOf(text, at) >= 0x30 && byteOf(text, at) <= 0x39
+    digitAt(text: string, at: int) -> bool = int('0') <= byteOf(text, at) <= int('9')
 
     // Moves past ASCII digits, answering how many.
     skipDigits(text: string, from: int) -> int
@@ -284,9 +284,9 @@ value. Anything else after a `\` is an error at that character, and final.
     lazy val hexDigit: Parser[int] = acceptMatch("hex digit", hexValue)
 
     val hexValue: PartialFunction[char, int] = match
-        c if c >= '0' && c <= '9' -> int(c) - 48
-        c if c >= 'a' && c <= 'f' -> int(c) - 87
-        c if c >= 'A' && c <= 'F' -> int(c) - 55
+        '0' <= c <= '9' -> int(c) - int('0')
+        'a' <= c <= 'f' -> int(c) - int('a') + 10
+        'A' <= c <= 'F' -> int(c) - int('A') + 10
 
     // The character the hex digits `ds` name, which must be a Unicode scalar value.
     scalar(ds: List[int]) -> Parser[string]
@@ -294,7 +294,7 @@ value. Anything else after a `\` is an error at that character, and final.
         for d in ds
             if code > 0x10ffff then break
             code = code * 16 + d
-        if ds.length() > 6 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff) then err[string]("Unicode scalar value (at most 10FFFF, and not D800 to DFFF) in `\\u{…}`")
+        if ds.length() > 6 || code > 0x10ffff || 0xd800 <= code <= 0xdfff then err[string]("Unicode scalar value (at most 10FFFF, and not D800 to DFFF) in `\\u{…}`")
         else success(s"${char(code)}")
 
     // `\` and an escape.

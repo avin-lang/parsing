@@ -280,4 +280,4 @@ before it. A wrong escape is reported at the character after the `\`.
             _ -> input.fail("escape")
 
     // Whether the byte `b` is an ASCII hexadecimal digit.
-    private isHexDigit(b: int) -> bool = (b >= 0x30 && b <= 0x39) || (b >= 0x61 && b <= 0x66) || (b >= 0x41 && b <= 0x46)
+    private isHexDigit(b: int) -> bool = int('0') <= b <= int('9') || int('a') <= b <= int('f') || int('A') <= b <= int('F')

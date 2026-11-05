@@ -32,7 +32,7 @@ acceptedIf()
 
 @test("acceptMatch and accept with a partial function read a character into a value")
 acceptedMatch()
-    val digit = acceptMatch("digit", match c if c.isDigit() -> int(c) - 48)
+    val digit = acceptMatch("digit", match '0' <= c <= '9' -> int(c) - int('0'))
     assertEq(all(rep1(digit), "409"), "[4, 0, 9]")
     assertEq(all(digit, "x"), "failure 1:1: expected digit, found 'x'")
     assertEq(all(digit, ""), "failure 1:1: expected digit, found end of input")

@@ -374,7 +374,7 @@ class Interpreter(p: Program, out: Writer, limit: long)
     private conversion(n: string, x: Value, at: Position) -> Result[Value, Halt] = (n, x) match
         ("f64", IntV(k)) -> Ok(FloatV(real(k)))
         ("i64", FloatV(r)) ->
-            if r >= -9223372036854775808.0 && r < 9223372036854775808.0 then Ok(IntV(long(r)))
+            if -9223372036854775808.0 <= r < 9223372036854775808.0 then Ok(IntV(long(r)))
             else fail(s"`i64` cannot hold ${floatText(r)}", at)
         _ -> Ok(x)
 
