@@ -31,6 +31,8 @@ data Pattern
     NamePat(name: string, at: Position)
     // A variant and patterns for its fields: `Circle(r)`, `Rect(w, _)`.
     VariantPat(name: string, fields: List[Pattern], at: Position)
+    // Where an arm could not be read: the place of its syntax error.
+    ErrorPat(at: Position)
 
 // One arm of a `match`: a pattern and the expression its value is.
 data Arm(pattern: Pattern, body: Expr)
@@ -59,6 +61,8 @@ data Expr
     // `else` is a block or another `if`.
     If(cond: Expr, thenBranch: Expr, otherwise: Option[Expr], at: Position)
     Match(scrutinee: Expr, arms: List[Arm], at: Position)
+    // Where an arm's body could not be read: the place of its syntax error.
+    ErrorExpr(at: Position)
 
 data Stmt
     // `let` (`mutable` false) and `var`.
@@ -71,6 +75,8 @@ data Stmt
     Return(value: Option[Expr], at: Position)
     Break(at: Position)
     Continue(at: Position)
+    // A statement that could not be read: the place of its syntax error.
+    ErrorStmt(at: Position)
 
 data Param(name: string, declared: TypeRef, at: Position)
 
@@ -88,6 +94,8 @@ data TypeDef
 data Item
     FnDecl(name: string, params: List[Param], result: Option[TypeRef], body: Expr, at: Position)
     TypeDecl(name: string, definition: TypeDef, at: Position)
+    // A declaration that could not be read: the place of its syntax error.
+    ErrorItem(at: Position)
 
 // A source file: its module's name, what it imports, and its declarations.
 data Module(name: string, imports: List[string], items: List[Item], at: Position)

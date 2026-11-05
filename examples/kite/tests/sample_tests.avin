@@ -12,6 +12,7 @@ samples()
     for name in ["arrays", "geometry", "loops", "strings"]
         val r = parseModule(read(s"samples/$name.kite"))
         assert(r.successful(), s"$name.kite: $r")
+        assertEq(r.errors().length(), 0)
         assertEq(showModule(r.get()) + "\n", read(s"samples/$name.ast"))
 
 @test("the specification's examples say what the parser does")

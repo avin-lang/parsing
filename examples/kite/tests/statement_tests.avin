@@ -94,8 +94,9 @@ matches()
     assertEq(expr("match x { _ => 0 } + 1"), "(+ (match x (_ 0)) 1)")
     assertEq(expr("match x { 0 a }"), "error 1:13: expected `=>`, found 'a'")
     assertEq(expr("match x { 0 => }"), "error 1:16: expected expression, found '}'")
-    assertEq(expr("match x { 0 => a 1 => b }"), "error 1:18: expected operator, `,`, end of line or `}`, found '1'")
-    assertEq(expr("match x { + => a }"), "error 1:11: expected pattern or `}` to close `{` at 1:9, found '+'")
+    assertEq(expr("match x { 0 => a 1 => b }"), "failure 1:18: expected operator, `,`, end of line or `}`, found '1'")
+    // An arm that cannot be read is an error of its own; the `match` resumes at its `}`.
+    assertEq(expr("match x { + => a }"), "failure 1:11: expected pattern, found '+'")
     assertEq(expr("match { }"), "error 1:10: expected operator or `{`, found end of input")
 
 @test("patterns")

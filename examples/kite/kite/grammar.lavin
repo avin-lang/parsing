@@ -6,10 +6,10 @@ everything at the margin explains it.
 
     module kite
 
-    import dev.avinlang.parsing.{Input, ParseResult, Parser, Position, RegexParsers, acceptMatch, acceptSeq, chainl1, commit, elem, err, failure, guard, ident, literal, not, opt, rep, rep1, rep1sep, success}
+    import dev.avinlang.parsing.{Input, ParseResult, Parser, Position, RegexParsers, acceptMatch, acceptSeq, chainl1, commit, elem, err, failure, guard, ident, literal, not, opt, recover, rep, rep1, rep1sep, success}
 
-The parser reads a whole file and answers a `Module`, or the first syntax error with its line and
-column. Expressions, statements and types can be parsed on their own too, which is how the tests
+The parser reads a whole file and answers a `Module` and every syntax error in it, each with its
+line and column. Expressions, statements and types can be parsed on their own too, which is how the tests
 look at one rule at a time.
 
 ## White space belongs to the grammar
@@ -475,10 +475,16 @@ An array is its items in brackets, or one item, `;` and a count: `[0.0; 8]`.
 
 A block is statements in braces, each ended by its line or by the `}`. Its value is its last
 statement's, when that is an expression, which is the checker's business; the parser keeps the
-statements in order.
+statements in order. A statement that cannot be read is an error the parse goes on past, as
+*Recovering after an error* below describes: anything in a block before its `}` is a statement or a
+mistake.
 
     // `{`, statements, `}`.
-    lazy val block: Parser[Expr] = enclosed("{", rep(stmt <~ stmtEnd), "}") ^^ (match (at, stmts) -> BlockExpr(stmts, at))
+    lazy val block: Parser[Expr] = enclosed("{", rep(not(literal("}")) ~> statementLine), "}") ^^ (match (at, stmts) -> BlockExpr(stmts, at))
+
+    // A statement and its end, or an error standing for it, resuming at the end of its line or at the
+    // block's `}`.
+    lazy val statementLine: Parser[Stmt] = statementLike(stmt <~ stmtEnd, at -> ErrorStmt(at))
 
     // A statement.
     lazy val stmt: Parser[Stmt] = (letStmt
@@ -548,8 +554,8 @@ An arm is a pattern, `=>` and an expression, ended by its line, a `,`, or the `}
     // A `match` arm.
     lazy val arm: Parser[Arm] = pattern ~! (literal("=>") ~> lined.expr) ^^ (match (p, body) -> Arm(p, body))
 
-    // A `match`'s arms.
-    lazy val arms: Parser[List[Arm]] = rep(arm <~ (literal(",") ^^^ () | stmtEnd))
+    // A `match`'s arms, each an error that resumes at its line's end where it cannot be read.
+    lazy val arms: Parser[List[Arm]] = rep(not(literal("}")) ~> statementLike(arm <~ (literal(",") ^^^ () | stmtEnd), at -> Arm(ErrorPat(at), ErrorExpr(at))))
 
 ## Declarations
 
@@ -578,15 +584,109 @@ may begin a line: the declaration is still going.
     // A declaration.
     lazy val item: Parser[Item] = fnDecl | typeDecl
 
+## Recovering after an error
+
+A file with several mistakes should have them all reported at once, so the parser goes on past each
+one. The library's `recover(p, sync, onError)` runs a rule; where the rule fails, it keeps the error,
+skips text with `sync` from where the error was to a place the grammar can read from again, and
+stands a node for what it could not read: `ErrorStmt`, `ErrorItem`, an arm of `ErrorPat` and
+`ErrorExpr`. Those places, the **resynchronisation points**, are the ones a person reading the text
+would pick:
+
+- a **statement** or a `match` **arm** resumes at the end of its line, or at the `}` that closes its
+  block, which is left for the block;
+- a **declaration** resumes at the next line that begins with `fn` or `type`;
+- an **import** resumes at the end of its line.
+
+Skipping reads characters, not tokens, because the text being skipped is exactly the text that
+does not parse. It still knows three things about it. A comment and a string are skipped whole, so
+that a brace or a line end inside one is not taken for the grammar's. A `{` is skipped with
+everything up to its matching `}`, line ends included, so that a statement whose first line is
+wrong, `while x y {`, takes its whole block with it rather than leaving the block's lines to be read
+as statements of their own. And a comment or a string never closed runs to the end of the text, as
+it does in the grammar.
+
+    // Characters of no interest to a skip: anything but what `stop` refuses.
+    skipped(stop: char -> bool) -> Parser[unit] = elem("text", c -> !stop(c)) ^^^ ()
+
+    // A comment, a string or a braced group, skipped whole.
+    lazy val skippedPiece: Parser[unit] = skippedComment | lineComment | skippedString | skippedGroup
+
+    // `/*` to its `*/`, comments nested inside, or to the end of the text.
+    lazy val skippedComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(skippedComment | not(acceptSeq("*/".chars())) ~> skipped(c -> false)) ~ opt(acceptSeq("*/".chars())) ^^^ ()
+
+    // `"` to its `"`, escapes and all, or to the end of its line.
+    lazy val skippedString: Parser[unit] = elem('"') ~ rep(elem('\\') ~> skipped(c -> false) | skipped(c -> c == '"' || c == '\n')) ~ opt(elem('"')) ^^^ ()
+
+    // `{` to its `}`, or to the end of the text.
+    lazy val skippedGroup: Parser[unit] = elem('{') ~ rep(skippedPiece | skipped(c -> c == '}')) ~ opt(elem('}')) ^^^ ()
+
+    // The rest of the line, stopping before its line end or before a `}` this skip did not open.
+    lazy val restOfLine: Parser[unit] = rep(skippedPiece | skipped(c -> c == '\n' || c == '}')) ^^^ ()
+
+    // The rest of the line, a `}` included.
+    lazy val restOfTopLine: Parser[unit] = rep(skippedPiece | skipped(c -> c == '\n')) ^^^ ()
+
+    // Whether the line starting here begins with `fn` or `type`. Reads nothing.
+    lazy val declarationLine: Parser[unit] = guard(rep(elem(' ') | elem('\t')) ~ (acceptSeq("fn".chars()) | acceptSeq("type".chars())) ~ not(elem("letter", nameChar))) ^^^ ()
+
+An error found at the first token of a line, in a statement that began on a line before, was made
+on the line before: `let x =` with its value forgotten is reported at the next line's first token,
+which begins a statement that is quite right. So such a statement skips nothing, and the next one
+reads that line. One that fails at its own first token, an operator that cannot begin a line,
+skips the line as usual. A statement therefore notes where it began, with `here`, and its skip is
+made from that. And a line that begins with `fn` or `type` is no statement at all: the block it
+stands in was left open. A statement's skip refuses to pass it, which leaves the error to the block,
+reported as its missing `}`, and the declaration resumes reading there. A declaration likewise skips
+nothing when the line of its error begins one.
+
+    // Succeeds, reading nothing, where only spaces and tabs stand between the start of the line and
+    // here.
+    lazy val lineStart: Parser[unit] = Parser(input ->
+        var i = input.offset - 1
+        while i >= 0 && (int(input.source.byteAt(i)) == 0x20 || int(input.source.byteAt(i)) == 0x09)
+            i -= 1
+        if i < 0 || int(input.source.byteAt(i)) == 0x0a then Some(()) else None)
+
+    // Succeeds, reading nothing, at the start of a line after the one holding `at`.
+    laterLine(at: Position) -> Parser[unit] = lineStart ~> Parser(input -> if at.offset < input.offset then Some(()) else None)
+
+    // What a statement, an arm or an import that began at `at` skips after an error: nothing at the
+    // start of a later line, otherwise the rest of the line. It refuses at a line that begins a
+    // declaration.
+    toStatement(at: Position) -> Parser[unit] = not(lineStart ~ declarationLine) ~> (laterLine(at) | restOfLine)
+
+    // `p`, or where it fails an error standing for it, made by `onError` from the error's position;
+    // a statement's skip follows.
+    statementLike[T](p: -> Parser[T], onError: Position -> T) -> Parser[T] = here.flatMap(at -> recover(p, toStatement(at), (msg, e) -> onError(e)))
+
+    // What a declaration skips after an error: the rest of the line, unless it begins a declaration,
+    // then every line up to the next that does.
+    lazy val toDeclaration: Parser[unit] = opt(not(lineStart ~ declarationLine) ~> restOfTopLine) ~ rep(elem('\n') ~ not(declarationLine) ~ restOfTopLine) ^^^ ()
+
 ## A file
 
-A file is its `module` line, its imports, and its declarations, each on lines of its own.
+A file is its `module` line, its imports, and its declarations, each on lines of its own. An import
+or a declaration that cannot be read is an error the file goes on past; a file with no `module` line
+has nothing to go on with.
 
-    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(kw("import") ~! (dottedName <~ lineEnd) ^^ (match (_, n) -> n)) ~ rep(item <~ lineEnd) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports, items, at))
+    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(guard(kw("import")) ~> importLine) ~ rep(declaration) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports.flatMap(i -> i.toList()), items, at))
+
+    // An import and its line end, or `None` for one that cannot be read, resuming at its line's end.
+    lazy val importLine: Parser[Option[string]] = statementLike(kw("import") ~! (dottedName <~ lineEnd) ^^ (match (_, n) -> Some(n)), at -> None)
+
+    // A declaration and its line end, or an error standing for it, resuming at the next declaration.
+    // Where none begins, the file could have ended instead, and the error says so.
+    lazy val declaration: Parser[Item] = recover(item <~ lineEnd | skipSpace ~> failure[Item]("end of input"), toDeclaration, (msg, at) -> ErrorItem(at))
 
 ## Running it
 
-    // The module `text` holds, or its first syntax error.
+A parse answers the module, with an error node wherever something could not be read, and every
+syntax error it met, in the order of the text, as the result's `errors()`. The file was right when
+that list is empty. A mistake the parse could not go on past, at the end of the text or in the
+`module` line, makes the result a failure, and it is the last error listed.
+
+    // The module `text` holds, with every syntax error found in it as the result's `errors()`.
     parseModule(text: string) -> ParseResult[Module] = Kite.parseAll(sourceFile, text)
 
     // One expression, as a statement reads it.

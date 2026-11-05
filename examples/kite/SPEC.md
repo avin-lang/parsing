@@ -143,9 +143,24 @@ bad.kite:5:1: expected operator or `)` to close `(` at 3:13, found '}'
   keyword where a name belongs is named; an integer too large for `i64`, a bad escape, a `\u{…}`
   that is not a Unicode scalar value and a `/*` never closed are each reported where they begin.
 
-**Recovering after an error to report several in one file is not built yet.** It is meant to
-resynchronise at the next `fn` or `type`, at a block's `}` and at a line end, and it waits on the
-parsing library: see Decisions.
+Every syntax error in a file is reported, in the order of the text, one to a line; `kite` then
+ends with status 1. After an error the parser resynchronises and reads on:
+
+- a **statement**, a `match` **arm** or an **import** resumes at the end of its line, or before the
+  `}` that closes its block. One whose error is at the first token of a later line, `let x =` with
+  the value forgotten, resumes at that token, since that line was not the mistake.
+- a **declaration** resumes at the next line that begins with `fn` or `type`.
+- a line that begins with `fn` or `type` inside a block ends it: the block was left open, which is
+  the error, and the declaration is read.
+- the skipped text is read as characters, with comments and strings skipped whole and a `{` skipped
+  with everything to its `}`.
+
+An error at the end of the file, and an error in the `module` line, end the parse.
+
+```text
+bad.kite:3:7: expected operator, end of line or `}`, found 'b'
+bad.kite:4:7: expected operator, end of line or `}`, found 'd'
+```
 
 ## Decisions
 
@@ -184,8 +199,16 @@ Each was made for this first stage, the syntax; the reason follows it.
 16. **Kite is its own package** under `examples/kite`, depending on the library by path, so a
     package that depends on the library never compiles the demo. Its tests are run from that
     directory: `avin test .`.
-17. **Error recovery waits on the library.** Reporting several errors needs a combinator that,
-    where a rule fails, keeps the message and position, clears the input's record of the furthest
-    failure and its commit, skips to a resynchronisation point, and answers a value standing for the
-    error. The library keeps that record private and offers no way to clear it, so recovery cannot
-    be written with it as it is. Review with the user.
+17. **Every syntax error is reported, resynchronising at `fn`, `type`, `}` and line ends.** Settled on
+    the user's delegation 2026-11-05. The parser is built with the library's `recover`, which keeps
+    a failure as an error, clears the record of what was expected and the commit, and skips with a
+    resynchronisation. A statement, an arm and an import resume at the end of their line or before
+    their block's `}`; a declaration at the next line beginning `fn` or `type`; and a statement's
+    skip refuses to pass a line that begins a declaration, so a block left open is reported once, as
+    its missing `}`, rather than as every line after it. An error at the first token of a later line
+    skips nothing, because the mistake was the line before. Alternatives weighed: resynchronising at
+    tokens rather than lines, which needs a lexer Kite does not have; skipping from where the failed
+    statement began rather than from the error, which goes back over text that read correctly and
+    stops early in a statement spread over lines; reporting only the first error, as before. Known
+    cost: a mistake inside a bracket that spans lines resumes at that line's end, so the bracket's
+    next line is read as a statement and may be a second error.

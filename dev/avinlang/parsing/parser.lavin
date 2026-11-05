@@ -457,9 +457,11 @@ lazy val statement: Parser[Stmt] = recover(assignment <~ literal(";"), rep(elem(
 
 `sync` is the grammar's **resynchronisation**: it reads from where the error was up to a place where
 the text can be read again, the end of a statement, the next declaration, a closing bracket, and
-may read that place too. It is any parser. One that fails is as one that reads nothing, with what it
-expected and any commit cleared again; a resynchronisation is a skip, not a part of the grammar that
-can be wrong.
+may read that place too. It is any parser, and nothing it expects is part of any message. A `sync`
+that fails **refuses** the recovery: the `recover` fails as `p` did, with everything `p` expected and
+its commit, as though it had not been tried, and the rules around it carry on. That is how a grammar
+leaves an error to an outer rule: a statement's resynchronisation that refuses where a line begins a
+declaration lets the block left open above it be the error, reported as the block's.
 
 The parse's result then answers every error with `r.errors()`, in the order they were met, followed
 by the failure the parse ended in if it ended in one; `Success`, `Failure` and `Error` mean what they
@@ -483,10 +485,11 @@ Three rules keep recovery from looping or lying.
 Inside a look ahead and inside white space a `recover` is only `p`: neither reads anything for
 keeps, so neither has anything to recover.
 
-    // `p`; where it fails before the end of the text, committed or not, the failure is kept as an error
-    // the result's `errors()` lists, the record of what was expected and the commit are cleared,
-    // `sync` skips from where the error was, and the value is `onError` of the message and the
-    // position. Where `p` and `sync` read nothing, one character is skipped.
+    // `p`; where it fails before the end of the text, committed or not, `sync` skips from where the
+    // failure was, the failure is kept as an error the result's `errors()` lists, the record of what
+    // was expected and the commit are cleared, and the value is `onError` of the message and the
+    // position. Where `p` and `sync` read nothing, one character is skipped; where `sync` fails, the
+    // `recover` fails as `p` did.
     recover[T, U](p: -> Parser[T], sync: -> Parser[U], onError: (string, Position) -> T) -> Parser[T]
         val q = later(p)
         val s = later(sync)
@@ -494,13 +497,7 @@ keeps, so neither has anything to recover.
             val start = input.offset
             val r = q.run(input)
             if r is Some(_) || input.lookingAhead > 0 || input.skippingWhiteSpace() then return r
-            val e = input.recoverFrom(start)?
-            val at = input.offset
-            val mark = input.errorCount()
-            if s.run(input) is None
-                input.offset = at
-                input.dropErrors(mark)
-            input.forget()
+            val e = input.recoverFrom(start, s)?
             if input.offset <= start
                 input.offset = start
                 if !input.atEnd() then input.offset += width(input.first())

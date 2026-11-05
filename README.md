@@ -20,7 +20,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.5.1" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.6.0" }
 }
 ```
 
@@ -108,9 +108,10 @@ The functions that make a parser of others:
 | `chainl1(first, p, q)` | `first`, then `p` after each `q`, a `Parser[(T, U) -> T]`, combined from the left | `T` |
 | `chainr1(p, q, combine, first)` | `x₀ q₁ x₁ … qₙ xₙ`, folded from the right: `combine(x₀, f₁(x₁, … fₙ(xₙ, first)))` | `U` |
 | `commit(p)` | `p`, whose failure fails the parse | `p`'s |
+| `recover(p, sync, onError)` | `p`; where it fails, the error is kept and `sync` skips from it | `p`'s, or `onError(msg, pos)` |
 | `positioned(p)` | `p`, after white space, its value (a `Positional`) positioned where `p` began unless it already has a position | `p`'s |
 | `guard(p)` | `p`, reading nothing | `p`'s |
-| `not(p)` | nothing, where `p` fails; what `p` expected is no part of a failure's message | `()` |
+| `not(p)` | nothing, where `p` fails; what `p` expected is no part of a failure's message, and where `p` succeeds just after a `literal`, the failure expects that literal | `()` |
 | `phrase(p)` | `p`, then white space, then the end of the text | `p`'s |
 | `log(p, name)` | `p`, printing where it was tried and what it answered | `p`'s |
 | `success(v)` | nothing | `v` |
@@ -147,7 +148,9 @@ The token parsers skip white space first:
 The numbers and strings answer their text, for the grammar to convert to the type it wants.
 The character tests for `elem` and `acceptIf` are the core `char` methods: `c.isDigit()`, `c.isLetter()`, `c.isLetterOrDigit()`, `c.isWhitespace()`. A parser the library
 does not offer is made by giving the function: `Parser(input -> …)`, using `input.atEnd()`,
-`input.first()`, `input.offset`, `input.handleWhiteSpace()` and `input.fail(what)`.
+`input.first()`, `input.offset`, `input.handleWhiteSpace()` and `input.fail(what)`. White space
+can hold an error, so a parser that skips it checks: `if !input.handleWhiteSpace() then return
+None`.
 
 ## Running a grammar, and white space
 
@@ -161,7 +164,9 @@ text)`: it must read all of it, white space at the end included. Both answer a `
 | `Error(msg, next)` | the same, past a commit point, so no other alternative was tried |
 
 with `r.successful()`, `r.isEmpty()`, `r.get()` (which traps on a failure), `r.getOrElse(v)`,
-`r.map(f)` and `r.next()`, whose `pos()` is the line and column. A result shows as
+`r.map(f)`, `r.next()`, whose `pos()` is the line and column, and `r.errors()`: every error the
+parse met, as a `ParseError(msg, pos, committed)` that shows as `line:column: msg`, those `recover`
+went on past and then the failure the parse ended in, empty when the text was right. A result shows as
 `[1:3] parsed: 42`, ``[2:5] failure: expected `,` or `]`, found '4'`` or `[1:2] error: …`.
 
 The message is the furthest place any alternative reached, every distinct thing expected there in
@@ -187,6 +192,73 @@ main()
 
 An `override skipWhitespace() -> bool = false` makes a grammar read every character itself.
 
+Nothing white space expects is part of a message, but white space can be wrong: a comment never
+closed. The white space parser says so with a commit point, and that is an error of the text,
+reported as the last thing white space expected, where it expected it, so `err` reports its message
+where it stands:
+
+```avin
+lazy val unclosed: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err("`*/` to close the comment that begins here")
+```
+
+The token about to be read fails with the error, which is final.
+
+## Recovering from errors
+
+`recover(p, sync, onError)` lets a grammar report every mistake in a text rather than the first.
+Where `p` fails, committed or not, the failure becomes an error with its message and position, the
+input's record of what was expected and its commit are cleared, `sync` skips from where the error
+was to a place the grammar can read from again, and the value is `onError(msg, pos)`, a node
+standing for what could not be read. The result's `errors()` then lists every error in order:
+
+```avin
+import dev.avinlang.parsing.{Parser, elem, ident, literal, opt, parseAll, recover, rep}
+
+lazy val stmt: Parser[string] = ident <~ literal(";")
+
+lazy val toSemi: Parser[unit] = rep(elem("text", c -> c != ';')) ~ opt(elem(';')) ^^^ ()
+
+main()
+    val r = parseAll(rep(recover(stmt, toSemi, (msg, at) -> "?")), "a; b c; 1; d;")
+    println(r)
+    for e in r.errors()
+        println(e)
+```
+
+```text
+[1:14] parsed: [a, ?, ?, d]
+1:6: expected `;`, found 'c'
+1:9: expected identifier, found '1'
+```
+
+The choices made, and why:
+
+- **Named `recover`, its handler given the message and the position**, like `onError(msg, at)`
+  everywhere else in the library's vocabulary: `Failure(msg, next)`, `err(msg)`. A `ParseError`
+  carries the same two and whether the failure was past a commit point.
+- **The errors live on the input, and `errors()` reads them from any result.** `Success`,
+  `Failure` and `Error` keep their meaning and their fields, so a grammar written before reads
+  exactly as it did; a successful parse that recovered is a `Success` whose `errors()` is not
+  empty. The alternative, a fourth case, would have broken every `match` on a result.
+- **`sync` skips from the error, not from where `p` began.** Going back over text that read
+  correctly can stop early in a rule spread over lines, and loses nothing the error position does
+  not already say. A grammar that wants to know where the rule began reads it first:
+  `here.flatMap(at -> recover(p, skipFrom(at), …))`.
+- **A `sync` that fails refuses the recovery**: the `recover` fails as `p` did, with everything
+  `p` expected and its commit, as though it had not been tried. A grammar leaves an error to an
+  outer rule this way: Kite's statement skip refuses at a line that begins a declaration, so a
+  block left open is one error, its missing `}`.
+- **Progress is guaranteed**: where `p` and `sync` together read nothing, one character is
+  skipped. The skip is not taken when only `sync` read nothing, since a `sync` that stops in front
+  of a closing `}` has done its job, and the `}` belongs to the block. A `recover` that fails again
+  at the place of the error before it reports one error, not two.
+- **The end of the text is not recovered from**: there is nothing after it to resume, so the
+  failure goes on to the rules around and is the failure the parse ends in, with everything the
+  grammar expected there.
+- **An abandoned alternative takes its errors with it**: `|`, `|||`, `opt`, the repetitions and the
+  look aheads drop the errors of a reading they go back from. Inside a look ahead and inside white
+  space, a `recover` is only `p`.
+
 ## Recursive grammars
 
 Module-level rules are `lazy val`s, and they may refer to each other and to themselves in any
@@ -205,8 +277,9 @@ this library: [`SPEC.md`](examples/kite/SPEC.md) is its grammar, operator table 
 and [`kite/grammar.lavin`](examples/kite/kite/grammar.lavin) is that grammar as a literate Avin
 file. It shows a grammar owning its white space (nested comments, and line ends that end
 statements except inside brackets or after an operator), a string's interpolation as a switch
-between character parsers and token parsers, two modes of one set of expression rules, and errors
-that name the bracket left open: ``expected `)` to close `(` at 3:13``. It is a package of its own,
+between character parsers and token parsers, two modes of one set of expression rules, errors
+that name the bracket left open, ``expected `)` to close `(` at 3:13``, and every error in a file
+reported, resynchronising at line ends, `}`, `fn` and `type`. It is a package of its own,
 so nothing that depends on this library compiles it:
 
 ```
@@ -214,6 +287,20 @@ cd examples/kite
 avin test .
 avin run . -- samples/geometry.kite
 ```
+
+## Changes in 0.6.0
+
+New: `recover(p, sync, onError)`, `r.errors()` and `ParseError`, as *Recovering from errors*
+describes. A grammar that does not recover reads as before, with two exceptions:
+
+| 0.5.1 | 0.6.0 |
+| --- | --- |
+| a commit inside the white space parser committed nothing and reported nothing | it is an error of the text, reported where white space last expected something |
+| `input.handleWhiteSpace()` answered nothing | it answers `false` where white space held an error, and the parser skipping it fails |
+| `literal(x) <~ not(y)` failing at `y` recorded nothing: ``unexpected 'f'`` | it expects `x` where `x` began: ``expected `if`, found 'i'`` |
+
+[Kite](examples/kite) now reports every syntax error in a file, and its unclosed comment is an
+error of its white space.
 
 ## Changes in 0.5.1
 

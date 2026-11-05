@@ -1,14 +1,17 @@
 module tests
 
-// Each entry point's result as one line: the tree printed as S-expressions, or `failure` or `error`
-// with the line and column and the message.
-import dev.avinlang.parsing.{Error, Failure, ParseResult, Success}
+// Each entry point's result: the tree printed as S-expressions, or each syntax error, `failure` or
+// `error` (past a commit point) with the line and column and the message, one to a line.
+import dev.avinlang.parsing.{ParseError, ParseResult}
 import kite.{parseExpr, parseModule, parsePattern, parseStmt, parseType, show, showModule, showPattern, showStmt, showType}
 
-shown[T](r: ParseResult[T], f: T -> string) -> string = r match
-    Success(v, _) -> f(v)
-    Failure(m, n) -> s"failure ${n.pos()}: $m"
-    Error(m, n) -> s"error ${n.pos()}: $m"
+shown[T](r: ParseResult[T], f: T -> string) -> string
+    val es = r.errors()
+    if es.isEmpty() then return f(r.get())
+    es.map(described).mkString("\n")
+
+// An error as `failure` or `error`, its line and column, and its message.
+described(e: ParseError) -> string = s"${if e.committed then "error" else "failure"} ${e.pos}: ${e.msg}"
 
 // An expression, read as a statement reads it.
 expr(text: string) -> string = shown(parseExpr(text), show)
@@ -23,6 +26,7 @@ file(text: string) -> string = shown(parseModule(text), showModule)
 
 // `body` as the statements of a function in a module, printed as that function's body; an error
 // as `file` shows it.
-body(text: string) -> string = parseModule("module m\nfn f() {\n" + text + "\n}") match
-    Success(m, _) -> showModule(m).stripPrefix("(module m)\n(fn f () (block").stripSuffix(")").stripSuffix(")").trim()
-    r -> shown(r, showModule)
+body(text: string) -> string
+    val r = parseModule("module m\nfn f() {\n" + text + "\n}")
+    if !r.errors().isEmpty() then return shown(r, showModule)
+    showModule(r.get()).stripPrefix("(module m)\n(fn f () (block").stripSuffix(")").stripSuffix(")").trim()

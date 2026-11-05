@@ -1,10 +1,9 @@
-// Parses a Kite source file and prints its syntax tree, one declaration to a line, or its syntax
-// error as `file:line:column: message`, ending with status 1.
+// Parses a Kite source file and prints its syntax tree, one declaration to a line, or every syntax
+// error in it, in order, each as `file:line:column: message`, ending with status 1.
 //
 //     avin run examples/kite -- examples/kite/samples/geometry.kite
 import avin.fs
 import avin.process.{args, exit}
-import dev.avinlang.parsing.{Error, Failure, Success}
 import kite.{parseModule, showModule}
 
 main()
@@ -17,11 +16,12 @@ main()
         Err(e) ->
             eprintln(s"$file: $e")
             exit(1)
-        Ok(text) -> parseModule(text) match
-            Success(m, _) -> println(showModule(m))
-            Failure(msg, next) ->
-                eprintln(s"$file:${next.pos()}: $msg")
-                exit(1)
-            Error(msg, next) ->
-                eprintln(s"$file:${next.pos()}: $msg")
+        Ok(text) ->
+            val r = parseModule(text)
+            val errors = r.errors()
+            if errors.isEmpty()
+                println(showModule(r.get()))
+            else
+                for e in errors
+                    eprintln(s"$file:$e")
                 exit(1)

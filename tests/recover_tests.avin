@@ -108,9 +108,6 @@ progress()
     assertEq(allTold(stay, "#;"), "[?, ?] | 1:1: expected identifier, found '#' | 1:2: expected identifier, found ';'")
     // A character of several bytes is skipped whole.
     assertEq(allTold(stay, "→; a;"), "[?, ?, a] | 1:1: expected identifier, found '→' | 1:2: expected identifier, found ';'")
-    // A resynchronisation that fails is one that read nothing.
-    val never = rep(recover(stmt, failure[unit]("never"), (msg, at) -> "?"))
-    assertEq(allTold(never, "#a;"), "[?, a] | 1:1: expected identifier, found '#'")
 
 @test("a committed failure is recovered from like any other, and its commit is cleared")
 committedFailures()
@@ -123,14 +120,31 @@ committedFailures()
     // Without a recover the commit fails the repetition.
     assertEq(allTold(rep(letStmt | stmt), "let 1; a;"), "failed | 1:5: expected identifier, found '1'")
 
-@test("an error inside the resynchronisation is no error of the text")
+@test("a resynchronisation that fails refuses the recovery, leaving the failure as it was")
 errorInSync()
-    // `!` must be followed by `?`, past a commit point: the skip fails there, and is as one that read
-    // nothing.
+    // `!` must be followed by `?`, past a commit point: the skip fails there, and nothing it expected
+    // or committed is part of what is reported.
     val bad = elem('!') ~! elem('?') ^^^ ()
-    assertEq(allTold(rep(recover(stmt, bad, marked)), "a !x; b;"), "[<1:3>, <1:3>, x, b] | 1:3: expected `;`, found '!'")
+    assertEq(allTold(rep(recover(stmt, bad, marked)), "a !x; b;"), "failed | 1:3: expected `;`, found '!'")
     // One that succeeds skips as usual.
     assertEq(allTold(rep(recover(stmt, bad, marked)), "a !?b; c;"), "[<1:3>, b, c] | 1:3: expected `;`, found '!'")
+    // A refused recovery fails as its rule did: uncommitted, so an alternative reads the text.
+    val never = recover(stmt, failure[unit]("never"), marked)
+    assertEq(allTold(never | ident ~> ident, "a b"), "b")
+    assertEq(allTold(rep(never), "#a;"), "failed | 1:1: expected identifier or end of input, found '#'")
+    // Committed, so nothing else does, and the commit's message is the error.
+    assertEq(allTold(recover(letStmt, failure[unit]("never"), marked) | ident, "let 1;"), "failed | 1:5: expected identifier, found '1'")
+
+@test("a refusal leaves the error to the recover around it, with the message the rule failed with")
+refusedInside()
+    // Statements in parentheses, each resuming after its `;` but refusing to skip a `)`.
+    val inParens = literal("(") ~! (rep(not(literal(")")) ~> recover(stmt, not(elem(')')) ~> rep(elem("text", c -> c != ';' && c != ')')) ~ opt(elem(';')), marked)) <~ literal(")")) ^^ (match (_, ss) -> ss.mkString(" "))
+    val outer = rep(recover(inParens, toSemi, marked))
+    assertEq(allTold(outer, "(a b; c;) (d e) f;"), "[<1:4> c, <1:14>, <1:17>] | 1:4: expected `;`, found 'b' | 1:14: expected `;`, found 'e' | 1:17: expected `(`, found 'f'")
+    // At the `)` the statement's skip refuses, so its error is the parentheses', past their commit.
+    val r = parseAll(outer, "(a) b;")
+    assertEq(told(r), "[<1:3>] | 1:3: expected `;`, found ')'")
+    assertEq(r.errors()(0).committed, true)
 
 @test("recovers nest: an error inside a block resumes inside it")
 nested()

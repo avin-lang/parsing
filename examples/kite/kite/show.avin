@@ -38,6 +38,7 @@ showPattern(p: Pattern) -> string = p match
     BoolPat(v, _) -> s"$v"
     NamePat(n, _) -> n
     VariantPat(n, fields, _) -> if fields.isEmpty() then s"($n)" else s"($n ${fields.map(showPattern).mkString(" ")})"
+    ErrorPat(_) -> "(error)"
 
 private showPart(p: StrPart) -> string = p match
     Text(t) -> quoted(t)
@@ -71,7 +72,13 @@ show(e: Expr) -> string = e match
     If(c, t, o, _) -> o match
         Some(x) -> s"(if ${show(c)} ${show(t)} ${show(x)})"
         None -> s"(if ${show(c)} ${show(t)})"
-    Match(x, arms, _) -> s"(match ${show(x)}${tail(arms.map(a -> s"(${showPattern(a.pattern)} ${show(a.body)})"))})"
+    Match(x, arms, _) -> s"(match ${show(x)}${tail(arms.map(showArm))})"
+    ErrorExpr(_) -> "(error)"
+
+// An arm as its pattern and its body, or `(error)` where it could not be read.
+private showArm(a: Arm) -> string = a.pattern match
+    ErrorPat(_) -> "(error)"
+    p -> s"(${showPattern(p)} ${show(a.body)})"
 
 showStmt(s: Stmt) -> string = s match
     Let(mutable, n, declared, v, _) ->
@@ -88,6 +95,7 @@ showStmt(s: Stmt) -> string = s match
         None -> "(return)"
     Break(_) -> "(break)"
     Continue(_) -> "(continue)"
+    ErrorStmt(_) -> "(error)"
 
 private showField(f: FieldDecl) -> string = s"(${f.name} ${showType(f.declared)})"
 
@@ -102,6 +110,7 @@ showItem(i: Item) -> string = i match
         Alias(t) -> s"(type $n (alias ${showType(t)}))"
         Record(fields) -> s"(type $n (record${tail(fields.map(showField))}))"
         Sum(variants) -> s"(type $n (sum${tail(variants.map(v -> s"(${v.name}${tail(v.fields.map(showField))})"))}))"
+    ErrorItem(_) -> "(error)"
 
 // A module, one form to a line: the header, each import, each declaration.
 showModule(m: Module) -> string

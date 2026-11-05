@@ -13,7 +13,9 @@ unclosedBrackets()
     assertEq(expr("[1, 2"), "error 1:6: expected operator, `,` or `]` to close `[` at 1:1, found end of input")
     // The end of the text ends the statement as a line end would, so the block lacks only its `}`.
     assertEq(expr("{ a"), "error 1:4: expected operator, statement or `}` to close `{` at 1:1, found end of input")
-    assertEq(expr("{ a b"), "error 1:5: expected operator, end of line or `}`, found 'b'")
+    // The statement's error is its own, before any commit; the block, its line skipped, still lacks
+    // its `}`.
+    assertEq(expr("{ a b"), "failure 1:5: expected operator, end of line or `}`, found 'b'\nerror 1:6: expected statement or `}` to close `{` at 1:1, found end of input")
     assertEq(expr("match x { _ => 1"), "error 1:17: expected operator, `,`, pattern or `}` to close `{` at 1:9, found end of input")
     assertEq(file("module m\ntype P = { x: f64"), "error 2:18: expected `,` or `}` to close `{` at 2:10, found end of input")
     assertEq(file("module m\nfn f(a: i64 { }"), "error 2:13: expected `,` or `)` to close `(` at 2:5, found '{'")
