@@ -172,7 +172,7 @@ once, the first time it is used. Each answers the text it read.
 ## Numbers
 
 The number parsers answer the text of the number, not its value, so a grammar converts it to the
-type it wants: `wholeNumber ^^ (s -> s.toLong().getOrElse(0))`. Where a part of a number turns out to have
+type it wants: `wholeNumber ^^ (s -> s.toLongOption().getOrElse(0))`. Where a part of a number turns out to have
 no digits after it, the offset goes back to where that part began, so the number ends before it.
 
 A whole number is an optional `-` and decimal digits.

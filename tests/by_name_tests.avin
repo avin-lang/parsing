@@ -9,7 +9,7 @@ val made = Buffer[string]()
 
 // `p`, noting under `name` that the expression giving it was evaluated.
 noted[T](name: string, p: Parser[T]) -> Parser[T]
-    made.add(name)
+    made.addOne(name)
     p
 
 madeCount(name: string) -> int

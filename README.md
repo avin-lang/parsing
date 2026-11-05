@@ -43,7 +43,7 @@ power(base: long, exponent: long) -> long
 // An operator: the literal, yielding the function it applies.
 op(text: string, f: (long, long) -> long) -> Parser[(long, long) -> long] = literal(text) ^^^ f
 
-lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLong().getOrElse(0))
+lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLongOption().getOrElse(0))
 
 lazy val atom: Parser[long] = number
     | literal("(") ~> expr <~ literal(")")

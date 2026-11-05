@@ -3,7 +3,7 @@ module tests
 import dev.avinlang.parsing.{Error, Failure, Parser, ParseResult, Positional, Success, parseAll, wholeNumber}
 
 // A whole number as a `long`.
-lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLong().getOrElse(0))
+lazy val number: Parser[long] = wholeNumber ^^ (s -> s.toLongOption().getOrElse(0))
 
 // A parse's result as one line: the value displayed, or `failure` or `error`, the position and the
 // message.

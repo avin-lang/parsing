@@ -85,7 +85,7 @@ floatingPointNumbers()
     assertEq(prefix(floatingPointNumber, "1.5ff"), "1.5f 4")
     assertEq(prefix(floatingPointNumber, "1.5x"), "1.5 3")
     assertEq(all(floatingPointNumber, "-x"), "failure 1:1: expected floating-point number, found '-'")
-    assertEq(all(floatingPointNumber ^^ (s -> s.toReal().getOrElse(0.0)), " 1.5e2 "), "150")
+    assertEq(all(floatingPointNumber ^^ (s -> s.toRealOption().getOrElse(0.0)), " 1.5e2 "), "150")
 
 @test("a string literal is the text as written, quotes and escapes included")
 strings()

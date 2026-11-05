@@ -183,9 +183,9 @@ same place joins them, and a failure before it is forgotten.
             if offset > furthest
                 furthest = offset
                 expectations.clear()
-                expectations.add(what)
+                expectations.addOne(what)
             elif offset == furthest
-                expectations.add(what)
+                expectations.addOne(what)
 
 A parser fails by answering `None`, and almost always records why at the same moment, so `fail`
 does both and reads as the last line of a parser that gives up: `else input.fail("integer")`.
@@ -217,7 +217,7 @@ are dropped and the message takes their place.
             val keep = if mark < 0 then 0 else mark
             while expectations.length() > keep
                 expectations.remove(expectations.length() - 1)
-            expectations.add(what)
+            expectations.addOne(what)
 
 A committed failure is final wherever it happened, so `withErrorMessage` replaces everything
 expected at the furthest place.
@@ -226,7 +226,7 @@ expected at the furthest place.
         reword(what: string)
             if furthest < 0 then return
             expectations.clear()
-            expectations.add(what)
+            expectations.addOne(what)
 
 ### Lines and columns
 
@@ -277,7 +277,7 @@ particular, which happens when a look ahead refuses a character, says only what 
             val at = if furthest < 0 then offset else furthest
             val seen = Buffer[string]()
             for e in expectations
-                if !seen.contains(e) then seen.add(e)
+                if !seen.contains(e) then seen.addOne(e)
             val found = if at >= length then "end of input" else debug(source.charAt(at))
             val out = StringWriter()
             val n = seen.length()

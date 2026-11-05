@@ -17,7 +17,7 @@ data Json
 lazy val value: Parser[Json] = literal("null") ^^^ JNull
     | literal("true") ^^^ JBool(true)
     | literal("false") ^^^ JBool(false)
-    | floatingPointNumber ^^ (x -> JNumber(x.toReal().getOrElse(0.0)))
+    | floatingPointNumber ^^ (x -> JNumber(x.toRealOption().getOrElse(0.0)))
     | stringLiteral ^^ (s -> JString(s))
     | array
     | obj

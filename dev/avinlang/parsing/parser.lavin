@@ -4,7 +4,7 @@ A grammar written with this library is a set of Avin values joined by operators 
 grammar itself:
 
 ```avin
-val sum = chainl1(wholeNumber ^^ (s -> s.toLong().getOrElse(0)), literal("+") ^^^ ((a: long, b: long) -> a + b))
+val sum = chainl1(wholeNumber ^^ (s -> s.toLongOption().getOrElse(0)), literal("+") ^^^ ((a: long, b: long) -> a + b))
 parseAll(sum, "1 + 2 + 3")          // [1:10] parsed: 6
 ```
 
@@ -175,7 +175,7 @@ fixed value, which is how a keyword becomes a constant: `literal("null") ^^^ JNu
 `p ^? f` filters and maps in one step: `f` is a `PartialFunction`, and where it is not defined at
 the value the parser fails, back where it started so that an alternative can try the same text. A
 `match` with nothing before it, written where a partial function is expected, is one:
-`wholeNumber ^? (match s if s.byteLength() <= 3 -> s.toInt().getOrElse(0))`. The second form says what
+`wholeNumber ^? (match s if s.byteLength() <= 3 -> s.toIntOption().getOrElse(0))`. The second form says what
 was wanted, given the value that was refused; the first says `value the function is defined at`.
 With two arguments it is called with a dot: `p.^?(f, n -> s"$n is out of range")`.
 
@@ -306,7 +306,7 @@ character is a letter and whose others may be digits too.
     // One `first`, then `p` as many times as it succeeds.
     private atLeastOnce[T](first: Parser[T], p: Parser[T], input: Input) -> Option[List[T]]
         val items = Buffer[T]()
-        items.add(first.run(input)?)
+        items.addOne(first.run(input)?)
         repeated(p, input, items)
 
 `repN(n, p)` reads exactly `n` values: a count read earlier, a fixed shape such as the four digits
@@ -318,7 +318,7 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
         Parser(input ->
             val items = Buffer[T]()
             for _ in 0..<num
-                items.add(q.run(input)?)
+                items.addOne(q.run(input)?)
             Some(items.toList()))
 
 `repsep` reads values with separators between them. A separator promises another value, so
@@ -359,7 +359,7 @@ failure of the whole repetition.
             p.run(input) match
                 Some(a) ->
                     if input.offset == start then break
-                    items.add(a)
+                    items.addOne(a)
                 None ->
                     if input.committed then return None
                     input.offset = start
@@ -373,7 +373,7 @@ a trailing separator an error. `?` returns the `None` at once.
     // `first`, then the values of `p` after each `sep`.
     private separated[T, S](p: Parser[T], sep: Parser[S], input: Input, first: T) -> Option[List[T]]
         val items = Buffer[T]()
-        items.add(first)
+        items.addOne(first)
         loop
             val start = input.offset
             if sep.run(input) is None
@@ -382,7 +382,7 @@ a trailing separator an error. `?` returns the `None` at once.
                 break
             val a = p.run(input)?
             if input.offset == start then break
-            items.add(a)
+            items.addOne(a)
         Some(items.toList())
 
 ## Optional parts and commit points
@@ -520,7 +520,7 @@ stack.
         Parser(input ->
             val values = Buffer[T]()
             val fs = Buffer[(T, U) -> U]()
-            values.add(v.run(input)?)
+            values.addOne(v.run(input)?)
             loop
                 val start = input.offset
                 val g = o.run(input) match
@@ -529,8 +529,8 @@ stack.
                         if input.committed then return None
                         input.offset = start
                         break
-                fs.add(g)
-                values.add(v.run(input)?)
+                fs.addOne(g)
+                values.addOne(v.run(input)?)
             var acc = first
             var i = fs.length() - 1
             while i >= 0
