@@ -4,16 +4,16 @@ module tests
 // resynchronises, a statement or an arm at its line's end or its block's `}`, a declaration at the
 // next line that begins `fn` or `type`, an import at its line's end, and reads on. What it could not
 // read stands in the tree as `(error)`.
-import kite.{parseModule, showModule}
+import kite.{checkSource, parseModule, parseSource, runSource, showModule}
 
 // A file's errors, one to a line, as `kite` prints them after the file's name.
-errs(text: string) -> string = parseModule(text).errors().map(e -> s"$e").mkString("\n")
+syntaxErrs(text: string) -> string = parseModule(text).errors().map(e -> s"$e").mkString("\n")
 
 // A file's tree, read past its errors.
 tree(text: string) -> string = showModule(parseModule(text).get())
 
 // `body` inside a function `f`, in a module: its errors.
-bodyErrs(text: string) -> string = errs("module m\nfn f() {\n" + text + "\n}")
+bodyErrs(text: string) -> string = syntaxErrs("module m\nfn f() {\n" + text + "\n}")
 
 // `n` copies of `line`, each ended by a line end.
 lines(line: string, n: int) -> string
@@ -25,13 +25,13 @@ lines(line: string, n: int) -> string
 
 @test("a file without a mistake reports none")
 clean()
-    assertEq(errs("module m\nfn f() { a }\n"), "")
+    assertEq(syntaxErrs("module m\nfn f() { a }\n"), "")
     assertEq(parseModule("module m\nfn f() { a }\n").successful(), true)
 
 @test("statements resume at their line's end: two errors, the lines between them read")
 twoStatements()
     val text = "module m\nfn f() {\n    let x = 1 2\n    let y = 3\n    y y\n    return x\n}\n"
-    assertEq(errs(text), "3:15: expected operator, end of line or `}`, found '2'\n5:7: expected operator, end of line or `}`, found 'y'")
+    assertEq(syntaxErrs(text), "3:15: expected operator, end of line or `}`, found '2'\n5:7: expected operator, end of line or `}`, found 'y'")
     assertEq(tree(text), "(module m)\n(fn f () (block (error) (let y 3) (error) (return x)))")
     // The parse went on past both, so it succeeded, the errors beside the tree.
     assertEq(parseModule(text).successful(), true)
@@ -51,7 +51,7 @@ backToBack()
 @test("five errors, at every kind of resynchronisation point")
 fiveErrors()
     val text = "module m\nimport a.\nimport b\nfn f( {\n    x\n}\ntype T =\nfn g() {\n    1 +\n}\ntype U = { x i64 }\nfn h() { ) }\n"
-    assertEq(errs(text), "3:1: expected name (`import` is a keyword), found 'i'\n4:7: expected name or `)` to close `(` at 4:5, found '{'\n8:1: expected `|`, `{` or type, found 'f'\n10:1: expected expression, found '}'\n11:14: expected `:`, found 'i'\n12:10: expected statement, found ')'")
+    assertEq(syntaxErrs(text), "3:1: expected name (`import` is a keyword), found 'i'\n4:7: expected name or `)` to close `(` at 4:5, found '{'\n8:1: expected `|`, `{` or type, found 'f'\n10:1: expected expression, found '}'\n11:14: expected `:`, found 'i'\n12:10: expected statement, found ')'")
     // The bad import is left out, the good one kept; each bad declaration is an `(error)`, and a
     // function whose statement failed keeps the rest of its body.
     assertEq(tree(text), "(module m)\n(import b)\n(error)\n(error)\n(fn g () (block (error)))\n(error)\n(fn h () (block (error)))")
@@ -75,42 +75,42 @@ atTheBrace()
     assertEq(bodyErrs("if c { a b }\nd e"), "3:10: expected operator, end of line or `}`, found 'b'\n4:3: expected operator, end of line or `}`, found 'e'")
     assertEq(tree("module m\nfn f() { a b }\nfn g() { c }\n"), "(module m)\n(fn f () (block (error)))\n(fn g () (block c))")
     assertEq(tree("module m\nfn f() { let x = }\n"), "(module m)\n(fn f () (block (error)))")
-    assertEq(errs("module m\nfn f() { let x = }\n"), "2:18: expected expression, found '}'")
+    assertEq(syntaxErrs("module m\nfn f() { let x = }\n"), "2:18: expected expression, found '}'")
 
 @test("a declaration resumes at the next line that begins fn or type")
 atDeclarations()
     // A bad header: its body is skipped whole, braces matched across lines.
-    assertEq(errs("module m\nfn f(a i64) {\n    x y\n}\nfn g() { 1 }\n"), "2:8: expected `:`, found 'i'")
+    assertEq(syntaxErrs("module m\nfn f(a i64) {\n    x y\n}\nfn g() { 1 }\n"), "2:8: expected `:`, found 'i'")
     assertEq(tree("module m\nfn f(a i64) {\n    x y\n}\nfn g() { 1 }\n"), "(module m)\n(error)\n(fn g () (block 1))")
     // Everything up to an indented `type` line is skipped too.
-    assertEq(errs("module m\ntype = 1\nnoise here\n  more noise\n  type T = i64\n"), "2:6: expected name, found '='")
+    assertEq(syntaxErrs("module m\ntype = 1\nnoise here\n  more noise\n  type T = i64\n"), "2:6: expected name, found '='")
     assertEq(tree("module m\ntype = 1\nnoise here\n  type T = i64\n"), "(module m)\n(error)\n(type T (alias i64))")
     // A line beginning with a word that only starts with `fn` is not a declaration.
     assertEq(tree("module m\ntype = 1\nfnord\ntype T = i64\n"), "(module m)\n(error)\n(type T (alias i64))")
     // A stray line between declarations is an error of its own, the file could have ended there.
-    assertEq(errs("module m\nfn f() { }\nhello\nfn g() { }\n"), "3:1: expected `fn`, `type` or end of input, found 'h'")
-    assertEq(errs("module m\nfn f() { }\n}\nfn g() { }\n}\n"), "3:1: expected `fn`, `type` or end of input, found '}'\n5:1: expected `fn`, `type` or end of input, found '}'")
+    assertEq(syntaxErrs("module m\nfn f() { }\nhello\nfn g() { }\n"), "3:1: expected `fn`, `type` or end of input, found 'h'")
+    assertEq(syntaxErrs("module m\nfn f() { }\n}\nfn g() { }\n}\n"), "3:1: expected `fn`, `type` or end of input, found '}'\n5:1: expected `fn`, `type` or end of input, found '}'")
 
 @test("a block left open before the next declaration is the block's error, and the declaration is read")
 openBlock()
     val text = "module m\nfn f() {\n    if c {\n        a\n\nfn g() { b }\n"
-    assertEq(errs(text), "6:1: expected statement or `}` to close `{` at 3:10, found 'f'")
+    assertEq(syntaxErrs(text), "6:1: expected statement or `}` to close `{` at 3:10, found 'f'")
     assertEq(tree(text), "(module m)\n(error)\n(fn g () (block b))")
-    assertEq(errs("module m\nfn f() {\n    a b\n\ntype T = i64\n"), "3:7: expected operator, end of line or `}`, found 'b'\n5:1: expected statement or `}` to close `{` at 2:8, found 't'")
+    assertEq(syntaxErrs("module m\nfn f() {\n    a b\n\ntype T = i64\n"), "3:7: expected operator, end of line or `}`, found 'b'\n5:1: expected statement or `}` to close `{` at 2:8, found 't'")
 
 @test("an error at the end of the file is the last reported")
 atTheEnd()
-    assertEq(errs("module m\nfn f() {\n    a b\n"), "3:7: expected operator, end of line or `}`, found 'b'\n4:1: expected statement or `}` to close `{` at 2:8, found end of input")
+    assertEq(syntaxErrs("module m\nfn f() {\n    a b\n"), "3:7: expected operator, end of line or `}`, found 'b'\n4:1: expected statement or `}` to close `{` at 2:8, found end of input")
     assertEq(parseModule("module m\nfn f() {\n    a b\n").successful(), false)
-    assertEq(errs("module m\nfn f() {\n    let x =\n"), "4:1: expected expression, found end of input")
-    assertEq(errs("module m\nfn f() { a b }\nfn g("), "2:12: expected operator, end of line or `}`, found 'b'\n3:6: expected name or `)` to close `(` at 3:5, found end of input")
-    assertEq(errs("module m\ntype T ="), "2:9: expected `|`, `{` or type, found end of input")
-    assertEq(errs("module m\nfn f() { }\nx"), "3:1: expected `fn`, `type` or end of input, found 'x'")
+    assertEq(syntaxErrs("module m\nfn f() {\n    let x =\n"), "4:1: expected expression, found end of input")
+    assertEq(syntaxErrs("module m\nfn f() { a b }\nfn g("), "2:12: expected operator, end of line or `}`, found 'b'\n3:6: expected name or `)` to close `(` at 3:5, found end of input")
+    assertEq(syntaxErrs("module m\ntype T ="), "2:9: expected `|`, `{` or type, found end of input")
+    assertEq(syntaxErrs("module m\nfn f() { }\nx"), "3:1: expected `fn`, `type` or end of input, found 'x'")
 
 @test("errors inside nested blocks and brackets resume inside them")
-nested()
+recoveredNesting()
     val text = "module m\nfn f() {\n    if c {\n        a b\n        while { x y }\n    }\n    let z = [1, 2\n    w\n}\n"
-    assertEq(errs(text), "4:11: expected operator, end of line or `}`, found 'b'\n5:19: expected operator, end of line or `}`, found 'y'\n6:5: expected `{`, found '}'\n8:5: expected operator, `,` or `]` to close `[` at 7:13, found 'w'")
+    assertEq(syntaxErrs(text), "4:11: expected operator, end of line or `}`, found 'b'\n5:19: expected operator, end of line or `}`, found 'y'\n6:5: expected `{`, found '}'\n8:5: expected operator, `,` or `]` to close `[` at 7:13, found 'w'")
     assertEq(tree("module m\nfn f() {\n    if c {\n        a b\n        d\n    }\n    e\n}\n"), "(module m)\n(fn f () (block (if c (block (error) d)) e))")
     // A bracket's mistake skips the rest of its line; a bracket that goes on to the next line has
     // that line read as a statement of its own.
@@ -122,7 +122,7 @@ nested()
 @test("match arms resume at their line's end")
 arms()
     val text = "module m\nfn f() {\n    match y {\n        1 => a b\n        2 =>\n        _ => c\n        3 => d\n    }\n}\n"
-    assertEq(errs(text), "4:16: expected operator, `,`, end of line or `}`, found 'b'\n6:11: expected operator, `,`, end of line or `}`, found '='")
+    assertEq(syntaxErrs(text), "4:16: expected operator, `,`, end of line or `}`, found 'b'\n6:11: expected operator, `,`, end of line or `}`, found '='")
     assertEq(tree(text), "(module m)\n(fn f () (block (match y (error) (error) (3 d))))")
     assertEq(tree("module m\nfn f() {\n    match y { 1 => a b, 2 => c }\n}\n"), "(module m)\n(fn f () (block (match y (error))))")
     assertEq(tree("module m\nfn f() {\n    match y {\n        + => a\n        _ => c\n    }\n}\n"), "(module m)\n(fn f () (block (match y (error) (_ c))))")
@@ -133,19 +133,44 @@ skippedWhole()
     assertEq(tree("module m\nfn f() {\n    a b \"}\" /* } */\n    c\n}\n"), "(module m)\n(fn f () (block (error) c))")
     assertEq(tree("module m\nfn f() {\n    a b /* one\n    two } */ c\n    d\n}\n"), "(module m)\n(fn f () (block (error) d))")
     // A string left open ends at its line, and the next line is read.
-    assertEq(errs("module m\nfn f() {\n    let s = \"abc\n    let t = 2\n}\nfn g() { 1 }\n}\nfn k() { x }\n"), "3:17: expected `\"` to close the string at 3:13, found '\\n'\n7:1: expected `fn`, `type` or end of input, found '}'")
+    assertEq(syntaxErrs("module m\nfn f() {\n    let s = \"abc\n    let t = 2\n}\nfn g() { 1 }\n}\nfn k() { x }\n"), "3:17: expected `\"` to close the string at 3:13, found '\\n'\n7:1: expected `fn`, `type` or end of input, found '}'")
     assertEq(tree("module m\nfn f() {\n    let s = \"abc\n    let t = 2\n}\n"), "(module m)\n(fn f () (block (error) (let t 2)))")
     // A comment never closed takes the rest of the file, and is the one error.
-    assertEq(errs("module m\nfn f() {\n    a\n    /* never closed\n}\nfn g() {}\n"), "4:5: expected `*/` to close the comment that begins here, found '/'")
+    assertEq(syntaxErrs("module m\nfn f() {\n    a\n    /* never closed\n}\nfn g() {}\n"), "4:5: expected `*/` to close the comment that begins here, found '/'")
     assertEq(tree("module m\nfn f() {\n    a\n    /* never closed\n}\nfn g() {}\n"), "(module m)\n(error)")
-    assertEq(errs("module m\nfn f() { a b }\n/* never closed"), "2:12: expected operator, end of line or `}`, found 'b'\n3:1: expected `*/` to close the comment that begins here, found '/'")
+    assertEq(syntaxErrs("module m\nfn f() { a b }\n/* never closed"), "2:12: expected operator, end of line or `}`, found 'b'\n3:1: expected `*/` to close the comment that begins here, found '/'")
 
 @test("imports resume at their line's end")
-imports()
-    assertEq(errs("module m\nimport 1\nimport a.b\nimport .c\nfn f() { }\n"), "2:8: expected name, found '1'\n4:8: expected name, found '.'")
+recoveredImports()
+    assertEq(syntaxErrs("module m\nimport 1\nimport a.b\nimport .c\nfn f() { }\n"), "2:8: expected name, found '1'\n4:8: expected name, found '.'")
     assertEq(tree("module m\nimport 1\nimport a.b\nimport .c\nfn f() { }\n"), "(module m)\n(import a.b)\n(fn f () (block))")
 
 @test("the module line has nothing before it to go on with: its error is the file's")
 moduleLine()
-    assertEq(errs("modul m\nfn f() { a b }\n"), "1:1: expected `module`, found 'm'")
-    assertEq(errs("module\nfn f() { a b }\n"), "2:1: expected name (`fn` is a keyword), found 'f'")
+    assertEq(syntaxErrs("modul m\nfn f() { a b }\n"), "1:1: expected `module`, found 'm'")
+    assertEq(syntaxErrs("module\nfn f() { a b }\n"), "2:1: expected name (`fn` is a keyword), found 'f'")
+
+// A program with three syntax errors and, between them, a name the checker would refuse.
+val broken = "module t\nimport io\nfn main() {\n    let x = 1 2\n    io.println(y)\n    a b\n}\ntype = 1\n"
+
+val brokenLines = "t.kite:4:15: expected operator, end of line or `}`, found '2'\nt.kite:6:7: expected operator, end of line or `}`, found 'b'\nt.kite:8:6: expected name, found '='"
+
+@test("parse, check and run each report every syntax error, in order, and check nothing")
+commands()
+    parseSource("t.kite", broken) match
+        Ok(_) -> assertEq("parsed", "refused")
+        Err(lines) -> assertEq(lines.mkString("\n"), brokenLines)
+    checkSource("t.kite", broken) match
+        Ok(_) -> assertEq("checked", "refused")
+        Err(lines) -> assertEq(lines.mkString("\n"), brokenLines)
+    val w = StringWriter()
+    assertEq(runSource("t.kite", broken, w).mkString("\n"), brokenLines)
+    assertEq(w.text(), "")
+    // A syntax error at the end of the file is the last line.
+    checkSource("t.kite", "module t\nfn main() { a b }\nfn g(") match
+        Ok(_) -> assertEq("checked", "refused")
+        Err(lines) -> assertEq(lines.mkString("\n"), "t.kite:2:15: expected operator, end of line or `}`, found 'b'\nt.kite:3:6: expected name or `)` to close `(` at 3:5, found end of input")
+    // Without a syntax error, the checker's mistakes are what is reported.
+    checkSource("t.kite", "module t\nimport io\nfn main() {\n    io.println(y)\n}\n") match
+        Ok(_) -> assertEq("checked", "refused")
+        Err(lines) -> assertEq(lines.length(), 1)

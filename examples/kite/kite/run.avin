@@ -1,0 +1,31 @@
+module kite
+
+// The three things `kite` does with a source file: print its tree, check it, and run it. Each
+// answers the file's mistakes as `file:line:column: message` lines, none when there are none.
+// The module a source text holds, or every syntax error in it, in the order of the text. A program
+// with a syntax error is never checked, so the checker sees no tree the parser read past a mistake.
+parsed(file: string, text: string) -> Result[Module, Vector[string]]
+    val r = parseModule(text)
+    val errors = r.errors()
+    if errors.isEmpty() then return Ok(r.get())
+    val lines = Buffer[string]()
+    for e in errors
+        lines.addOne(s"$file:$e")
+    Err(lines.toVector())
+
+// The tree of a source text, as `showModule` prints it, or its syntax errors.
+parseSource(file: string, text: string) -> Result[string, Vector[string]] = parsed(file, text).map(showModule)
+
+// The checked program in a source text, or every mistake the checker found in it.
+checkSource(file: string, text: string) -> Result[Program, Vector[string]]
+    val m = parsed(file, text)?
+    val (program, errors) = checkModule(m)
+    if errors.isEmpty() then Ok(program) else Err(errors.map(d -> s"$file:${d.at}: ${d.message}"))
+
+// Runs a source text, writing its output to `out`; answers its mistakes, or the runtime error that
+// stopped it.
+runSource(file: string, text: string, out: Writer) -> Vector[string] = checkSource(file, text) match
+    Err(lines) -> lines
+    Ok(program) -> execute(program, out) match
+        Some(d) -> Vector(s"$file:${d.at}: runtime error: ${d.message}")
+        None -> Vector.empty[string]()

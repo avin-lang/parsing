@@ -1,5 +1,7 @@
 module strings
 
+import io
+
 // Interpolation, escapes and text in any script.
 fn greet(name: string, times: i64) -> string {
     "Hello, {name}! ({times} {if times == 1 { "time" } else { "times" }})"
@@ -21,8 +23,8 @@ fn label(n: i64) -> string {
 fn main() {
     let größe = 3
     let 名前 = "世界"
-    print(greet(名前, größe))
-    print(quote("nested {"strings {"too"}"}"))
-    print("snowman: \u{2603}, smile: 😀, newline next\n")
-    print(label(-1) + ", " + label(größe))
+    io.println(greet(名前, größe))
+    io.println(quote("nested {"strings {"too"}"}"))
+    io.println("snowman: \u{2603}, smile: 😀, newline next\n")
+    io.println(label(-1) + ", " + label(größe))
 }

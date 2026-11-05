@@ -673,7 +673,7 @@ has nothing to go on with.
     lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(guard(kw("import")) ~> importLine) ~ rep(declaration) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports.flatMap(i -> i.toList()), items, at))
 
     // An import and its line end, or `None` for one that cannot be read, resuming at its line's end.
-    lazy val importLine: Parser[Option[string]] = statementLike(kw("import") ~! (dottedName <~ lineEnd) ^^ (match (_, n) -> Some(n)), at -> None)
+    lazy val importLine: Parser[Option[Import]] = statementLike(here ~ (kw("import") ~! (dottedName <~ lineEnd)) ^^ (match (at, (_, n)) -> Some(Import(n, at))), at -> None)
 
     // A declaration and its line end, or an error standing for it, resuming at the next declaration.
     // Where none begins, the file could have ended instead, and the error says so.

@@ -1,0 +1,39 @@
+module tests
+
+// What the checker and the evaluator make of a program, each as one string the tests compare: the
+// checker's mistakes, one `line:column: message` to a line, or `ok`; a program's output followed by
+// its error lines.
+import kite.{checkModule, parseModule, runSource}
+
+// The mistakes the checker finds in a whole program, or `ok`; each syntax error as `syntax …`, in
+// which case nothing is checked.
+errs(text: string) -> string
+    val r = parseModule(text)
+    val syntax = r.errors()
+    if !syntax.isEmpty() then return syntax.map(e -> s"syntax $e").mkString("\n")
+    val (_, found) = checkModule(r.get())
+    if found.isEmpty() then "ok" else found.map(d -> s"${d.at}: ${d.message}").mkString("\n")
+
+// The statements of `main`, which begin on line 4, after `module t`, `import io` and the `fn` line.
+inMain(text: string) -> string = "module t\nimport io\nfn main() {\n" + text + "\n}\n"
+
+// Declarations, which begin on line 3, followed by an empty `main`.
+withMain(text: string) -> string = "module t\nimport io\n" + text + "\nfn main() {}\n"
+
+// The checker's mistakes in `main`'s statements.
+checkBody(text: string) -> string = errs(inMain(text))
+
+// The checker's mistakes in declarations.
+decls(text: string) -> string = errs(withMain(text))
+
+// What a whole program prints, then its mistakes or its runtime error, each line after the output.
+out(text: string) -> string
+    val w = StringWriter()
+    val lines = runSource("t", text, w)
+    w.text() + lines.map(l -> l + "\n").mkString("")
+
+// What `main`'s statements print.
+run(text: string) -> string = out(inMain(text))
+
+// What `main` prints of each expression given, one line each.
+values(exprs: Vector[string]) -> string = run(exprs.map(e -> "io.println(\"{" + e + "}\")").mkString("\n"))

@@ -1,0 +1,103 @@
+module tests
+
+// The checker's name rules: modules and imports, the two namespaces of a module's declarations, the
+// built-in names, `main`, and local names, which never shadow one another.
+
+@test("io and math are the modules, each imported once")
+imports()
+    assertEq(errs("module t\nimport io\nimport math\nfn main() {}"), "ok")
+    assertEq(errs("module t\nimport foo\nfn main() {}"), "2:1: there is no module `foo`; Kite's modules are `io` and `math`")
+    assertEq(errs("module t\nimport io.extra\nfn main() {}"), "2:1: there is no module `io.extra`; Kite's modules are `io` and `math`")
+    assertEq(errs("module t\nimport io\nimport io\nfn main() {}"), "3:1: `io` is already declared at 2:1")
+    // A module's name is free: one with dots, or one naming a declaration in it.
+    assertEq(errs("module a.b.c\nfn main() {}"), "ok")
+    assertEq(errs("module main\nfn main() {}"), "ok")
+
+@test("a module's functions are reached through it, once imported")
+moduleUse()
+    assertEq(checkBody("io.println(\"a\")\nio.print(\"b\")"), "ok")
+    assertEq(errs("module t\nfn main() {\n    io.println(\"a\")\n}"), "3:5: `io` is not imported; add `import io`")
+    assertEq(errs("module t\nfn main() {\n    let x = math\n}"), "3:13: `math` is not imported; add `import math`")
+    assertEq(checkBody("io.shout(\"a\")"), "4:3: module `io` has no function `shout`")
+    assertEq(checkBody("let f = io.println"), "4:11: `io.println` is a function; call it as `io.println(…)`")
+    assertEq(checkBody("let f = io.nothing"), "4:11: module `io` has no function `nothing`")
+    assertEq(checkBody("let m = io"), "4:9: `io` is a module, not a value")
+    assertEq(checkBody("io(1)"), "4:1: `io` is a module, not a function")
+    // A local of a module's name hides the module.
+    assertEq(checkBody("let io = 1\nlet y = io + 1"), "ok")
+    assertEq(checkBody("let io = 1\nio.println(\"a\")"), "5:3: `i64` has no fields")
+
+@test("every declaration's name is declared once, in its namespace")
+duplicates()
+    assertEq(decls("fn f() {}\nfn f() {}"), "4:1: `f` is already declared at 3:1")
+    assertEq(decls("type P = { x: i64 }\ntype P = { y: i64 }"), "4:1: `P` is already declared at 3:1")
+    assertEq(decls("type A = i64\ntype A = f64"), "4:1: `A` is already declared at 3:1")
+    assertEq(decls("type P = { x: i64 }\nfn P() {}"), "4:1: `P` is already declared at 3:1")
+    assertEq(decls("type S = | A | B\ntype T = | B | C"), "4:12: `B` is already declared at 3:16")
+    assertEq(decls("type S = | A | A"), "3:16: `A` is already declared at 3:12")
+    assertEq(decls("type S = | f\nfn f() {}"), "4:1: `f` is already declared at 3:12")
+    assertEq(decls("fn io() {}"), "3:1: `io` is already declared at 2:1")
+    assertEq(decls("type R = { r: i64 }\ntype S = | R"), "4:12: `R` is already declared at 3:1")
+    // Types and values are two namespaces: an alias or a sum may share a function's or a variant's
+    // name.
+    assertEq(decls("type A = i64\nfn A() {}"), "ok")
+    assertEq(decls("type S = | S"), "ok")
+    assertEq(decls("type S = | A | B\nfn g() -> S { S.A }"), "4:15: `S` is a type, not a value")
+
+@test("the built-in types' names cannot be declared")
+builtinNames()
+    for n in ["i64", "f64", "bool", "string"]
+        assertEq(decls(s"type $n = i64"), s"3:1: `$n` is a built-in type")
+        assertEq(decls(s"fn $n() {}"), s"3:1: `$n` is a built-in type")
+        assertEq(decls(s"type S = | $n"), s"3:12: `$n` is a built-in type")
+    // A field, a parameter or a local may have one of their names.
+    assertEq(decls("type R = { i64: i64 }\nfn f(f64: f64) -> f64 { let bool = f64\nbool }"), "ok")
+
+@test("fields and parameters are each declared once")
+fieldNames()
+    assertEq(decls("type R = { x: i64, x: f64 }"), "3:20: `x` is already declared at 3:12")
+    assertEq(decls("type S = | V(a: i64, a: i64)"), "3:22: `a` is already declared at 3:14")
+    assertEq(decls("fn f(a: i64, a: i64) {}"), "3:14: `a` is already declared at 3:6")
+    // Different records and variants may use the same field names.
+    assertEq(decls("type R = { x: i64 }\ntype Q = { x: f64 }\ntype S = | V(x: bool) | W(x: string)"), "ok")
+
+@test("a program has a main without parameters or result")
+mainRules()
+    assertEq(errs("module t\nfn f() {}"), "1:1: a program needs `fn main()`")
+    assertEq(errs("module t\ntype main = i64"), "1:1: a program needs `fn main()`")
+    assertEq(errs("module t\ntype R = { x: i64 }\ntype S = | main"), "1:1: a program needs `fn main()`")
+    assertEq(errs("module t\nfn main(x: i64) {}"), "2:1: `main` takes no parameters")
+    assertEq(errs("module t\nfn main() -> i64 { 0 }"), "2:1: `main` returns nothing")
+    assertEq(errs("module t\nfn main(a: i64) -> i64 { a }"), "2:1: `main` takes no parameters\n2:1: `main` returns nothing")
+
+@test("unknown names, and names that are not values")
+unknownNames()
+    assertEq(checkBody("let x = y"), "4:9: unknown name `y`")
+    assertEq(checkBody("y()"), "4:1: unknown function `y`")
+    assertEq(checkBody("let x = i64"), "4:9: `i64` is a type, not a value")
+    assertEq(errs("module t\ntype P = { x: i64 }\ntype S = | V(a: i64) | E\ntype A = i64\nfn f() {}\nfn main() {\nlet a = f\nlet b = P\nlet c = V\nlet d = A\nlet e = E\nA(1)\nstring(1)\n}"),
+        "7:9: `f` is a function; call it as `f(…)`\n8:9: `P` is a record; build one as `P(…)`\n9:9: `V` has 1 field; build it as `V(…)`\n10:9: `A` is a type, not a value\n12:1: `A` is a type, not a function\n13:1: `string` is a type, not a function")
+    assertEq(decls("type S = | V(a: i64, b: i64)\nfn f() -> S { V }"), "4:15: `V` has 2 fields; build it as `V(…)`")
+
+@test("a local never shadows a local or a parameter, but may hide a declaration")
+shadowing()
+    assertEq(checkBody("let x = 1\nlet x = 2"), "5:1: `x` is already declared at 4:1")
+    assertEq(checkBody("let x = 1\nvar x = 2"), "5:1: `x` is already declared at 4:1")
+    assertEq(checkBody("let x = 1\n{ let x = 2 }"), "5:3: `x` is already declared at 4:1")
+    assertEq(checkBody("let x = 1\nfor x in 0..3 {}"), "5:1: `x` is already declared at 4:1")
+    assertEq(checkBody("let x = 1\nmatch 2 { x => 0 }"), "5:11: `x` is already declared at 4:1")
+    assertEq(decls("fn f(a: i64) { let a = 1 }"), "3:16: `a` is already declared at 3:6")
+    assertEq(decls("fn f(a: i64) { for a in 0..3 {} }"), "3:16: `a` is already declared at 3:6")
+    assertEq(checkBody("for i in 0..2 { for i in 0..2 {} }"), "4:17: `i` is already declared at 4:1")
+    // A pattern binds each name once.
+    assertEq(decls("type P = | Two(a: i64, b: i64)\nfn f(p: P) -> i64 { match p { Two(x, x) => x } }"), "4:38: `x` is already declared at 4:35")
+    // Sibling scopes may reuse a name, and a name is free again after its block.
+    assertEq(checkBody("{ let x = 1 }\n{ let x = 2 }\nlet x = 3"), "ok")
+    assertEq(checkBody("for i in 0..2 {}\nfor i in 0..2 {}\nlet i = 0"), "ok")
+    assertEq(checkBody("match 1 { n => n }\nmatch 2 { n => n }"), "ok")
+    // A name is in scope only after its `let`, and only in its block.
+    assertEq(checkBody("let x = x"), "4:9: unknown name `x`")
+    assertEq(checkBody("{ let y = 1 }\nlet z = y"), "5:9: unknown name `y`")
+    // A local may hide a function or a record.
+    assertEq(decls("fn f() -> i64 { 1 }\nfn g() -> i64 { let f = 2\nf }"), "ok")
+    assertEq(decls("fn f() -> i64 { 1 }\nfn g() -> i64 { let f = 2\nf() }"), "5:1: only a function, a record or a variant can be called")

@@ -1,27 +1,40 @@
-// Parses a Kite source file and prints its syntax tree, one declaration to a line, or every syntax
-// error in it, in order, each as `file:line:column: message`, ending with status 1.
+// The `kite` command. `kite run file.kite` checks a program and runs it; `kite check file.kite`
+// only checks it; `kite parse file.kite` prints its syntax tree, one declaration to a line. Every
+// syntax error in the file is printed first, in order, and stops the command before checking. A
+// mistake is printed as `file:line:column: message`, a runtime error as
+// `file:line:column: runtime error: message`, and either ends the command with status 1.
 //
-//     avin run examples/kite -- examples/kite/samples/geometry.kite
+//     avin run examples/kite -- run examples/kite/samples/geometry.kite
 import avin.fs
 import avin.process.{args, exit}
-import kite.{parseModule, showModule}
+import kite.{checkSource, parseSource, runSource}
+
+// Standard output, as a `Writer` the evaluator writes a program's output to.
+class Stdout(): Writer
+    override write(text: string) = print(text)
+
+failed(lines: Vector[string])
+    for line in lines
+        eprintln(line)
+    exit(1)
 
 main()
     val given = args()
-    if given.length() != 1
-        eprintln("usage: kite <file.kite>")
+    if given.length() != 2 || !["run", "check", "parse"].contains(given(0))
+        eprintln("usage: kite run|check|parse <file.kite>")
         exit(2)
-    val file = given(0)
+    val file = given(1)
     fs.readText(file) match
         Err(e) ->
             eprintln(s"$file: $e")
             exit(1)
-        Ok(text) ->
-            val r = parseModule(text)
-            val errors = r.errors()
-            if errors.isEmpty()
-                println(showModule(r.get()))
-            else
-                for e in errors
-                    eprintln(s"$file:$e")
-                exit(1)
+        Ok(text) -> given(0) match
+            "parse" -> parseSource(file, text) match
+                Ok(tree) -> println(tree)
+                Err(lines) -> failed(lines)
+            "check" -> checkSource(file, text) match
+                Ok(_) -> ()
+                Err(lines) -> failed(lines)
+            _ ->
+                val lines = runSource(file, text, Stdout())
+                if !lines.isEmpty() then failed(lines)

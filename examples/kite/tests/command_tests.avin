@@ -1,0 +1,27 @@
+module tests
+
+// What `kite parse`, `kite check` and `kite run` print, through the functions the command calls:
+// each mistake as `file:line:column: message`.
+import kite.{checkSource, parseSource, runSource}
+
+@test("parse answers the tree, or the syntax error with the file's name")
+parseCommand()
+    assertEq(parseSource("a.kite", "module a\nimport io\nfn main() { io.println(\"x\") }"), Ok("(module a)\n(import io)\n(fn main () (block (call (. io println) \"x\")))"))
+    assertEq(parseSource("a.kite", "module a\nfn main( {"), Err(Vector("a.kite:2:10: expected name or `)` to close `(` at 2:8, found '{'")))
+    // A program that does not check still parses.
+    assertEq(parseSource("a.kite", "module a\nfn f() { nope }").isOk(), true)
+
+@test("check answers nothing for a sound program, and every mistake in one that is not")
+checkCommand()
+    assertEq(checkSource("a.kite", "module a\nfn main() {}").isOk(), true)
+    assertEq(checkSource("dir/b.kite", "module b\nfn main() { let x: i64 = 1.0\nlet y = z }"), Err(Vector("dir/b.kite:2:26: expected `i64`, found `f64`", "dir/b.kite:3:9: unknown name `z`")))
+    assertEq(checkSource("a.kite", "module a\nfn main( {"), Err(Vector("a.kite:2:10: expected name or `)` to close `(` at 2:8, found '{'")))
+
+@test("run writes the program's output, and answers its runtime error")
+runCommand()
+    val w = StringWriter()
+    assertEq(runSource("r.kite", "module r\nimport io\nfn main() { io.println(\"hi\")\nlet a = [1]\nlet b = a[1] }", w), Vector("r.kite:5:11: runtime error: index 1 is out of bounds for an array of length 1"))
+    assertEq(w.text(), "hi\n")
+    val v = StringWriter()
+    assertEq(runSource("r.kite", "module r\nimport io\nfn main() { io.print(\"ok\") }", v), Vector.empty[string]())
+    assertEq(v.text(), "ok")

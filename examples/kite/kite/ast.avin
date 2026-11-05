@@ -97,5 +97,8 @@ data Item
     // A declaration that could not be read: the place of its syntax error.
     ErrorItem(at: Position)
 
+// `import name`, at its keyword.
+data Import(name: string, at: Position)
+
 // A source file: its module's name, what it imports, and its declarations.
-data Module(name: string, imports: List[string], items: List[Item], at: Position)
+data Module(name: string, imports: List[Import], items: List[Item], at: Position)

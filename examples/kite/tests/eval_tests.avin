@@ -1,0 +1,145 @@
+module tests
+
+// The evaluator: what every construct computes, how values print, and the order things happen in.
+
+@test("values print as interpolation writes them")
+printing()
+    assertEq(values(["42", "-7", "9223372036854775807", "-9223372036854775807 - 1"]), "42\n-7\n9223372036854775807\n-9223372036854775808\n")
+    assertEq(values(["3.0", "2.5", "0.1 + 0.2", "1e20", "1.5e-7", "-0.0", "1.0 / 0.0", "-1.0 / 0.0", "0.0 / 0.0"]), "3.0\n2.5\n0.30000000000000004\n100000000000000000000.0\n0.00000015\n-0.0\ninf\n-inf\nNaN\n")
+    assertEq(values(["true", "false", "\"text\"", "\"\""]), "true\nfalse\ntext\n\n")
+    assertEq(values(["[1, 2, 3]", "[[1.0], [2.5]]", "[\"a\", \"b\\n{1}\"]", "[true; 2]", "[0; 0]"]), "[1, 2, 3]\n[[1.0], [2.5]]\n[\"a\", \"b\\n1\"]\n[true, true]\n[]\n")
+    assertEq(values(["0..3", "1..=5", "5..1"]), "0..3\n1..=5\n5..1\n")
+    assertEq(out("module t\nimport io\ntype P = { x: f64, name: string }\ntype S = | Circle(c: P, r: f64) | Empty\ntype E = {}\nfn main() {\nlet p = P(x: 1.0, name: \"o\")\nio.println(\"{p} {Circle(c: p, r: 2.0)} {Empty} {[Empty]} {E()}\")\n}\n"),
+        "P(x: 1.0, name: \"o\") Circle(c: P(x: 1.0, name: \"o\"), r: 2.0) Empty [Empty] E()\n")
+
+@test("io.print writes without a line end, io.println with one")
+output()
+    assertEq(run("io.print(\"a\")\nio.print(\"b\")\nio.println(\"c\")\nio.println(\"\")\nio.print(\"d\")"), "abc\n\nd")
+    assertEq(run(""), "")
+
+@test("integer arithmetic truncates toward zero, and follows precedence")
+evalIntegers()
+    assertEq(values(["1 + 2 * 3", "(1 + 2) * 3", "10 - 2 - 3", "100 / 10 / 5", "7 / 2", "-7 / 2", "7 % 3", "-7 % 2", "7 % -2", "2 * -3", "- -4", "-9223372036854775807 - 1 % -1"]), "7\n9\n5\n2\n3\n-3\n1\n-1\n1\n-6\n4\n-9223372036854775807\n")
+    assertEq(values(["3037000499 * 3037000499", "9223372036854775807 - 1 + 1", "(-9223372036854775807 - 1) / 2", "(-9223372036854775807 - 1) % -1", "(-9223372036854775807 - 1) * 1", "-1 * 9223372036854775807"]), "9223372030926249001\n9223372036854775807\n-4611686018427387904\n0\n-9223372036854775808\n-9223372036854775807\n")
+
+@test("f64 arithmetic is IEEE 754")
+evalFloats()
+    assertEq(values(["1.5 + 2.25", "1.0 - 3.5", "2.5 * 4.0", "1.0 / 3.0", "7.5 % 2.0", "-7.5 % 2.0", "1e308 * 10.0", "0.0 * -1.0", "-(1.5)"]), "3.75\n-2.5\n10.0\n0.3333333333333333\n1.5\n-1.5\ninf\n-0.0\n-1.5\n")
+
+@test("comparisons, equality and the logical operators")
+comparisons()
+    assertEq(values(["1 < 2", "2 <= 2", "3 > 4", "4 >= 5", "1.5 < 1.25", "\"a\" < \"b\"", "\"B\" < \"a\"", "\"\" < \"a\"", "\"ab\" >= \"abc\"", "\"é\" > \"z\""]), "true\ntrue\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\nfalse\ntrue\n")
+    assertEq(values(["1 == 1", "1 != 1", "\"a\" == \"a\"", "true == false", "[1, 2] == [1, 2]", "[1, 2] != [2, 1]", "[[1], [2]] == [[1], [2]]", "0.0 == -0.0", "0.0 / 0.0 == 0.0 / 0.0", "[0.0 / 0.0] != [0.0 / 0.0]"]), "true\nfalse\ntrue\nfalse\ntrue\ntrue\ntrue\ntrue\nfalse\ntrue\n")
+    // Two ranges are equal when they hold the same integers.
+    assertEq(values(["(0..3) == (0..=2)", "(0..3) == (0..3)", "(0..3) == (1..3)", "(3..0) == (5..=1)", "(1..1) == (2..2)"]), "true\ntrue\nfalse\ntrue\ntrue\n")
+    assertEq(values(["true && false", "true || false", "!true", "!false && true", "false || false"]), "false\ntrue\nfalse\ntrue\nfalse\n")
+
+@test("&& and || evaluate their right side only when it decides")
+shortCircuit()
+    val program = "module t\nimport io\nfn yes(s: string) -> bool { io.print(s)\ntrue }\nfn no(s: string) -> bool { io.print(s)\nfalse }\nfn main() {\nlet a = no(\"1\") && yes(\"2\")\nlet b = yes(\"3\") || no(\"4\")\nlet c = yes(\"5\") && no(\"6\")\nlet d = no(\"7\") || yes(\"8\")\nio.println(\" {a} {b} {c} {d}\")\n}\n"
+    assertEq(out(program), "135678 false true false true\n")
+
+@test("records and variants with equality by their fields")
+evalRecords()
+    val types = "module t\nimport io\ntype P = { x: i64, y: i64 }\ntype S = | A(v: i64) | B\nfn main() {\n"
+    assertEq(out(types + "let p = P(x: 1, y: 2)\nlet q = P(y: 2, x: 1)\nlet r = P(1, y: 3)\nio.println(\"{p == q} {p == r} {p.x + r.y} {A(1) == A(1)} {A(1) == A(2)} {A(1) == B} {B == B}\")\n}\n"), "true false 4 true false false true\n")
+
+@test("let and var, assignment and every compound assignment")
+evalAssignments()
+    assertEq(run("var a = 10\na += 5\nio.println(\"{a}\")\na -= 3\nio.println(\"{a}\")\na *= 2\nio.println(\"{a}\")\na /= 5\nio.println(\"{a}\")\na %= 3\nio.println(\"{a}\")\na = -1\nio.println(\"{a}\")"), "15\n12\n24\n4\n1\n-1\n")
+    assertEq(run("var f = 1.5\nf *= 2.0\nf -= 0.5\nf /= 2.0\nf %= 1.0\nf += 10.0\nio.println(\"{f}\")"), "10.25\n")
+    assertEq(run("var s = \"a\"\ns += \"b\"\ns = s + s\nio.println(s)"), "abab\n")
+
+@test("arrays: indexing, element and nested assignment, and copies")
+evalArrays()
+    assertEq(run("var a = [1, 2, 3]\na[0] = 10\na[2] += 5\nio.println(\"{a} {a[1]}\")"), "[10, 2, 8] 2\n")
+    assertEq(run("var g = [[0; 3]; 2]\ng[1][2] = 7\ng[0][0] -= 1\nio.println(\"{g}\")"), "[[-1, 0, 0], [0, 0, 7]]\n")
+    // Every value is a copy: changing one variable never changes another.
+    assertEq(run("var a = [1, 2]\nvar b = a\nb[0] = 9\nio.println(\"{a} {b}\")"), "[1, 2] [9, 2]\n")
+    assertEq(run("let row = [0, 0]\nvar g = [row; 2]\ng[0][0] = 1\nio.println(\"{g} {row}\")"), "[[1, 0], [0, 0]] [0, 0]\n")
+    assertEq(out("module t\nimport io\nfn change(a: [i64; 2]) -> [i64; 2] { var b = a\nb[0] = 5\nb }\nfn main() {\nlet a = [1, 2]\nlet c = change(a)\nio.println(\"{a} {c}\")\n}\n"), "[1, 2] [5, 2]\n")
+    assertEq(run("let e: [i64; 0] = []\nio.println(\"{e} {e == []}\")"), "[] true\n")
+
+@test("records' fields are read and assigned through any path")
+fields()
+    val types = "module t\nimport io\ntype P = { x: f64, tags: [string; 2] }\ntype L = { ends: [P; 2] }\nfn main() {\n"
+    assertEq(out(types + "var l = L(ends: [P(x: 1.0, tags: [\"a\", \"b\"]); 2])\nl.ends[1].x = 5.0\nl.ends[0].tags[1] = \"z\"\nl.ends[1].x += 0.5\nio.println(\"{l.ends[0].tags[1]} {l.ends[1].x} {l.ends[1].tags[1]} {l.ends[0].x}\")\n}\n"), "z 5.5 b 1.0\n")
+    assertEq(out(types + "var p = P(x: 1.0, tags: [\"a\", \"b\"])\nlet q = p\np.x = 2.0\nio.println(\"{p.x} {q.x}\")\n}\n"), "2.0 1.0\n")
+
+@test("for walks a range or an array, evaluated once")
+forLoops()
+    assertEq(run("for i in 0..3 { io.print(\"{i} \") }\nfor i in 0..=3 { io.print(\"{i} \") }\nfor i in 3..0 { io.print(\"never\") }\nfor i in 2..2 { io.print(\"never\") }\nfor i in 2..=2 { io.print(\"once\") }"), "0 1 2 0 1 2 3 once")
+    assertEq(run("for i in -2..1 { io.print(\"{i} \") }"), "-2 -1 0 ")
+    assertEq(run("for s in [\"x\", \"y\"] { io.print(s) }\nfor r in [[1, 2], [3, 4]] { io.print(\"{r[1]}\") }\nlet e: [i64; 0] = []\nfor x in e { io.print(\"never\") }"), "xy24")
+    // The range's ends and the array are read once, before the first pass.
+    assertEq(run("var n = 3\nfor i in 0..n { n = 10\nio.print(\"{i}\") }\nio.println(\" {n}\")"), "012 10\n")
+    assertEq(run("var a = [1, 2, 3]\nfor x in a { a[2] = 100\nio.print(\"{x} \") }\nio.println(\"{a}\")"), "1 2 3 [1, 2, 100]\n")
+    // A range to the largest i64 ends there, and one from the smallest starts there.
+    assertEq(run("for i in 9223372036854775806..=9223372036854775807 { io.print(\"{i} \") }"), "9223372036854775806 9223372036854775807 ")
+    assertEq(run("for i in -9223372036854775807 - 1..-9223372036854775807 + 1 { io.print(\"{i} \") }"), "-9223372036854775808 -9223372036854775807 ")
+    // A range is a value, and may be bound and walked again.
+    assertEq(run("let r = 1..=3\nvar t = 0\nfor i in r { t += i }\nfor i in r { t += i }\nio.println(\"{t} {r}\")"), "12 1..=3\n")
+
+@test("while, break and continue, and loops inside loops")
+whileLoops()
+    assertEq(run("var i = 0\nwhile i < 5 { i += 1\nif i == 2 { continue }\nif i == 4 { break }\nio.print(\"{i}\") }\nio.println(\" {i}\")"), "13 4\n")
+    assertEq(run("for i in 0..3 { for j in 0..3 { if j > i { break }\nio.print(\"{i}{j} \") } }"), "00 10 11 20 21 22 ")
+    assertEq(run("for i in 0..4 { if i % 2 == 0 { continue }\nio.print(\"{i}\") }"), "13")
+    assertEq(run("for x in [1, 2, 3, 4] { if x == 2 { continue }\nif x == 4 { break }\nio.print(\"{x}\") }"), "13")
+    assertEq(run("var n = 0\nwhile true { n += 1\nif n == 3 { break } }\nio.println(\"{n}\")"), "3\n")
+    assertEq(run("while false { io.print(\"never\") }"), "")
+    // A break inside a match inside a loop leaves the loop.
+    assertEq(run("for i in 0..10 { match i { 3 => { break }, _ => io.print(\"{i}\") } }"), "012")
+
+@test("functions: parameters, results, recursion and return")
+evalFunctions()
+    val program = "module t\nimport io\nfn fact(n: i64) -> i64 { if n <= 1 { 1 } else { n * fact(n - 1) } }\nfn fib(n: i64) -> i64 { if n < 2 { return n }\nfib(n - 1) + fib(n - 2) }\nfn even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }\nfn odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }\nfn first(xs: [i64; 4], want: i64) -> i64 { for i in 0..4 { if xs[i] == want { return i } }\n-1 }\nfn say(s: string) { if s == \"\" { return }\nio.println(s) }\nfn main() {\nio.println(\"{fact(20)} {fib(20)} {even(10)} {odd(7)} {first([5, 6, 7, 8], 7)} {first([5, 6, 7, 8], 9)}\")\nsay(\"\")\nsay(\"hi\")\n}\n"
+    assertEq(out(program), "2432902008176640000 6765 true true 2 -1\nhi\n")
+    // Arguments by name are evaluated as written, and bound to their parameters.
+    assertEq(out("module t\nimport io\nfn show(s: string) -> string { io.print(s)\ns }\nfn pair(a: string, b: string) -> string { a + b }\nfn main() {\nio.println(\" \" + pair(b: show(\"1\"), a: show(\"2\")))\n}\n"), "12 21\n")
+    // A function without a result discards its body's value.
+    assertEq(out("module t\nimport io\nfn f() { 42 }\nfn main() {\nf()\nio.println(\"done\")\n}\n"), "done\n")
+
+@test("blocks, if and match are expressions")
+expressions()
+    assertEq(values(["{ let a = 2\na * a }", "if 1 < 2 { \"yes\" } else { \"no\" }", "if false { 1 } else if true { 2 } else { 3 }", "{ { 5 } }"]), "4\nyes\n2\n5\n")
+    assertEq(run("let a = if false { 1 }\nif true { io.println(\"then\") }\nif false { io.println(\"never\") } else { io.println(\"else\") }"), "then\nelse\n")
+
+@test("match compares literals, takes variants and records apart, and binds names")
+matching()
+    val types = "module t\nimport io\ntype P = { x: i64, y: i64 }\ntype S = | Circle(c: P, r: i64) | Rect(w: i64, h: i64) | Empty\nfn name(s: S) -> string { match s { Circle(P(0, 0), r) => \"centred {r}\", Circle(c, _) => \"circle at {c.x}\", Rect(w, h) => \"rect {w * h}\", Empty => \"empty\" } }\nfn main() {\n"
+    assertEq(out(types + "io.println(name(Circle(c: P(x: 0, y: 0), r: 3)))\nio.println(name(Circle(c: P(x: 2, y: 0), r: 3)))\nio.println(name(Rect(w: 2, h: 5)))\nio.println(name(Empty))\n}\n"), "centred 3\ncircle at 2\nrect 10\nempty\n")
+    assertEq(values(["match -1 { 0 => \"zero\", -1 => \"minus\", _ => \"other\" }", "match 7 { 0 => 0, n => n * 2 }", "match \"b\" { \"a\" => 1, \"b\" => 2, _ => 3 }", "match true { false => \"f\", true => \"t\" }", "match -0.0 { 0.0 => \"zero\", _ => \"other\" }", "match 0.0 / 0.0 { 0.0 => \"zero\", _ => \"other\" }"]), "minus\n14\n2\nt\nzero\nother\n")
+    assertEq(out(types + "let p = P(x: 1, y: 2)\nlet t = match p { P(1, y) => y, P(_, _) => 0 }\nio.println(\"{t}\")\n}\n"), "2\n")
+
+@test("strings interpolate any value and concatenate")
+evalStrings()
+    assertEq(run("let n = 3\nio.println(\"{n} + {n} = {n + n}, \" + \"{\"in {\"ner\"}\"}\")"), "3 + 3 = 6, in ner\n")
+    assertEq(run("io.println(\"tab\\there \\\"q\\\" \\{b\\} \\\\ \\u{e9} 世界 😀\")"), "tab\there \"q\" {b} \\ é 世界 😀\n")
+    assertEq(run("let s = \"\"\nio.println(s + \"\" + \"x\" + s)"), "x\n")
+
+@test("i64 and f64 convert, and math computes")
+evalConversions()
+    assertEq(values(["f64(3)", "f64(-2)", "i64(2.9)", "i64(-2.9)", "i64(0.0 - 0.0)", "i64(5)", "f64(1.5)", "i64(-9223372036854775808.0)", "f64(9223372036854775807)"]), "3.0\n-2.0\n2\n-2\n0\n5\n1.5\n-9223372036854775808\n9223372036854776000.0\n")
+    assertEq(errs("module t\nimport io\nimport math\nfn main() { io.println(\"{math.abs(-2.5)} {math.abs(-0.0)} {math.sqrt(2.0)} {math.sqrt(-1.0)}\") }"), "ok")
+    assertEq(out("module t\nimport io\nimport math\nfn main() { io.println(\"{math.abs(-2.5)} {math.abs(-0.0)} {math.sqrt(16.0)} {math.sqrt(-1.0)}\") }"), "2.5 0.0 4.0 NaN\n")
+
+@test("an assignment evaluates its target's indices once, before its value")
+evaluationOrder()
+    val program = "module t\nimport io\nfn at(i: i64) -> i64 { io.print(\"i{i} \")\ni }\nfn v(x: i64) -> i64 { io.print(\"v{x} \")\nx }\nfn main() {\nvar g = [[0; 2]; 2]\ng[at(1)][at(0)] = v(5)\ng[at(1)][at(0)] += v(2)\nio.println(\"{g} {v(1) + v(2) * v(3)}\")\n}\n"
+    assertEq(out(program), "i1 i0 v5 i1 i0 v2 v1 v2 v3 [[0, 0], [7, 0]] 7\n")
+
+@test("a sum type that holds itself builds and walks a list")
+recursiveTypes()
+    val program = "module t\nimport io\ntype L = | End | Link(v: i64, next: L)\nfn build(n: i64) -> L { var l = End\nfor i in 1..=n { l = Link(v: i, next: l) }\nl }\nfn sum(l: L) -> i64 { match l { End => 0, Link(v, rest) => v + sum(rest) } }\nfn main() {\nlet l = build(3)\nio.println(\"{l} {sum(build(1000))}\")\n}\n"
+    assertEq(out(program), "Link(v: 3, next: Link(v: 2, next: Link(v: 1, next: End))) 500500\n")
+
+@test("a long run makes and drops many values")
+manyValues()
+    val program = "module t\nimport io\ntype P = { x: i64, s: string }\nfn main() {\nvar total = 0\nvar last = \"\"\nfor i in 0..100000 { let p = P(x: i, s: \"n{i}\")\nlet a = [p, p, p]\ntotal += a[2].x\nlast = a[1].s }\nvar big = [0; 100000]\nfor i in 0..100000 { big[i] = i * 2 }\nio.println(\"{total} {last} {big[99999]}\")\n}\n"
+    assertEq(out(program), "4999950000 n99999 199998\n")
+
+@test("recursion runs 10,000 and 99,999 calls deep")
+deepRecursion()
+    val program = "module t\nimport io\nfn down(n: i64) -> i64 { if n == 0 { 0 } else { 1 + down(n - 1) } }\nfn main() {\nio.println(\"{down(10000)} {down(99998)}\")\n}\n"
+    assertEq(out(program), "10000 99998\n")

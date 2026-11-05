@@ -1,0 +1,52 @@
+module kite
+
+// What the checker knows about a program: the types of Kite values, and the declarations a checked
+// module holds, resolved, which the evaluator then runs.
+import dev.avinlang.parsing.Position
+
+// A Kite type, as the checker computes it.
+data Ty
+    IntT
+    FloatT
+    BoolT
+    StrT
+    // The type of a statement, and of an expression with no value: `()`.
+    UnitT
+    // The type of `a..b` and `a..=b`, which have no name in a program.
+    RangeT
+    // The type of what never finishes: `return`, `break`, `continue`, and a block ending in one. It
+    // fits wherever any type is wanted.
+    NeverT
+    ArrayT(element: Ty, size: long)
+    RecordT(name: string)
+    SumT(name: string)
+    // Stands where a mistake left no type, so that one mistake is reported once.
+    ErrorT
+
+// A type as a message spells it: an alias is shown as what it stands for.
+showTy(t: Ty) -> string = t match
+    IntT -> "i64"
+    FloatT -> "f64"
+    BoolT -> "bool"
+    StrT -> "string"
+    UnitT -> "()"
+    RangeT -> "range"
+    NeverT -> "_"
+    ArrayT(e, n) -> s"[${showTy(e)}; $n]"
+    RecordT(n) -> n
+    SumT(n) -> n
+    ErrorT -> "?"
+
+// A field of a record or a variant, or a parameter of a function, with its resolved type.
+data Slot(name: string, ty: Ty)
+
+data VariantSig(name: string, owner: string, fields: Vector[Slot])
+
+// A function, its parameters and result resolved; `result` is `UnitT` when none is declared.
+data Function(name: string, params: Vector[Slot], result: Ty, body: Expr, at: Position)
+
+// A checked module: every record's fields, every sum's variants, and every function.
+data Program(records: Map[string, Vector[Slot]], sums: Map[string, Vector[VariantSig]], variants: Map[string, VariantSig], functions: Map[string, Function])
+
+// One mistake the checker found, where it is.
+data Diagnostic(message: string, at: Position)
