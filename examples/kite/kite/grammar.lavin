@@ -264,10 +264,10 @@ An escape is `\` and one character, or `\u{…}` with one to six hex digits nami
 value. Anything else after a `\` is an error at that character, and final.
 
     // The text an escape stands for, after its `\`.
-    lazy val escapeBody: Parser[string] = (acceptMatch("escape", escapes) | unicodeEscape).withFailureMessage("escape (`\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\\"`, `\\{`, `\\}` or `\\u{…}`)")
+    lazy val escapeBody: Parser[string] = (escapes | unicodeEscape).withFailureMessage("escape (`\\n`, `\\t`, `\\r`, `\\0`, `\\\\`, `\\\"`, `\\{`, `\\}` or `\\u{…}`)")
 
-    // The one-character escapes.
-    val escapes: PartialFunction[char, string] = match
+    // The one-character escapes, written as a match function in place.
+    lazy val escapes: Parser[string] = acceptMatch("escape", match
         'n' -> "\n"
         't' -> "\t"
         'r' -> "\r"
@@ -275,18 +275,16 @@ value. Anything else after a `\` is an error at that character, and final.
         '\\' -> "\\"
         '"' -> "\""
         '{' -> "{"
-        '}' -> "}"
+        '}' -> "}")
 
     // `u{…}`: the character with that code.
     lazy val unicodeEscape: Parser[string] = (elem('u') ~> commit(elem('{') ~> rep1(hexDigit) <~ elem('}')).withErrorMessage("`{`, hex digits and `}` after `\\u`")).flatMap(ds -> scalar(ds))
 
     // A hex digit's value.
-    lazy val hexDigit: Parser[int] = acceptMatch("hex digit", hexValue)
-
-    val hexValue: PartialFunction[char, int] = match
+    lazy val hexDigit: Parser[int] = acceptMatch("hex digit", match
         '0' <= c <= '9' -> int(c) - int('0')
         'a' <= c <= 'f' -> int(c) - int('a') + 10
-        'A' <= c <= 'F' -> int(c) - int('A') + 10
+        'A' <= c <= 'F' -> int(c) - int('A') + 10)
 
     // The character the hex digits `ds` name, which must be a Unicode scalar value.
     scalar(ds: List[int]) -> Parser[string]
@@ -308,7 +306,7 @@ closing quote is a commit point, and its message replaces whatever else the stri
 where they stopped.
 
     // A string whose pieces are `part`s, with the position of its opening quote.
-    quotedWith(part: -> Parser[StrPart]) -> Parser[(Position, List[StrPart])] =
+    quotedWith(@sendable part: -> Parser[StrPart]) -> Parser[(Position, List[StrPart])] =
         (here <~ elem('"')).flatMap(at -> rep(part) <~ commit(elem('"')).withErrorMessage(s"`\"` to close the string at $at") ^^ (parts -> (at, merged(parts))))
 
     // The pieces of a string with neighbouring text joined, so `"a\tb"` is one piece of text.
@@ -607,7 +605,7 @@ as statements of their own. And a comment or a string never closed runs to the e
 it does in the grammar.
 
     // Characters of no interest to a skip: anything but what `stop` refuses.
-    skipped(stop: char -> bool) -> Parser[unit] = elem("text", c -> !stop(c)) ^^^ ()
+    skipped(@sendable stop: char -> bool) -> Parser[unit] = elem("text", c -> !stop(c)) ^^^ ()
 
     // A comment, a string or a braced group, skipped whole.
     lazy val skippedPiece: Parser[unit] = skippedComment | lineComment | skippedString | skippedGroup
@@ -658,7 +656,7 @@ nothing when the line of its error begins one.
 
     // `p`, or where it fails an error standing for it, made by `onError` from the error's position;
     // a statement's skip follows.
-    statementLike[T](p: -> Parser[T], onError: Position -> T) -> Parser[T] = here.flatMap(at -> recover(p, toStatement(at), (msg, e) -> onError(e)))
+    statementLike[T](@sendable p: -> Parser[T], @sendable onError: Position -> T) -> Parser[T] = here.flatMap(at -> recover(p, toStatement(at), (msg, e) -> onError(e)))
 
     // What a declaration skips after an error: the rest of the line, unless it begins a declaration,
     // then every line up to the next that does.
