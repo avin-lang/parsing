@@ -27,14 +27,14 @@ valueEq(a: Value, b: Value) -> bool = (a, b) match
     (BoolV(x), BoolV(y)) -> x == y
     (StrV(x), StrV(y)) -> x == y
     (UnitV, UnitV) -> true
-    (RangeV(l1, h1, i1), RangeV(l2, h2, i2)) -> rangeEnds(l1, h1, i1) == rangeEnds(l2, h2, i2)
+    (RangeV(l1, h1, in1), RangeV(l2, h2, in2)) -> rangeEnds(l1, h1, in1) == rangeEnds(l2, h2, in2)
     (ArrayV(xs), ArrayV(ys)) -> allEq(xs, ys)
     (RecordV(n, xs), RecordV(m, ys)) -> n == m && allEq(xs, ys)
     (VariantV(n, xs), VariantV(m, ys)) -> n == m && allEq(xs, ys)
     _ -> false
 
 private allEq(xs: Vector[Value], ys: Vector[Value]) -> bool =
-    xs.length() == ys.length() && xs.zip(ys).forall(match (x, y) -> valueEq(x, y))
+    xs.length == ys.length && xs.zip(ys).forall(match (x, y) -> valueEq(x, y))
 
 // A value as interpolation writes it: a string as its text, and inside an array, a record or a
 // variant as a quoted literal; a record or a variant with its fields named.
@@ -48,7 +48,7 @@ valueText(v: Value, p: Program, nested: bool) -> string = v match
     ArrayV(items) -> s"[${items.map(x -> valueText(x, p, true)).mkString(", ")}]"
     RecordV(n, fields) -> s"$n${fieldsText(p.records.getOrElse(n, Vector.empty[Slot]()), fields, p)}"
     VariantV(n, fields) ->
-        if fields.isEmpty() then n
+        if fields.isEmpty then n
         else s"$n${fieldsText(p.variants.get(n).map(s -> s.fields).getOrElse(Vector.empty[Slot]()), fields, p)}"
 
 private fieldsText(slots: Vector[Slot], fields: Vector[Value], p: Program) -> string

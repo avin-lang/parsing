@@ -43,7 +43,7 @@ class Captured(): Output
     override write(text: string) = kept.with(w -> w.write(text))
 
     // Everything written so far.
-    text() -> string = kept.with(w -> w.text())
+    text() -> string = kept.with(w -> w.text)
 
 // Runs a checked program's `main`, writing its output to `out`, and answers the runtime error that
 // stopped it, if one did. It runs on a thread of its own, whose stack holds `callLimit` calls.
@@ -66,7 +66,7 @@ class Interpreter(p: Program, out: Output, limit: long)
         if depth >= limit then return fail(s"stack overflow: calls nested more than $limit deep", at)
         depth += 1
         // The last parameter is innermost, as if each were bound in turn.
-        val env = f.params.zip(args).map((s, a) -> Cell(s.name, a)).reverse().toList()
+        val env = f.params.zip(args).map((s, a) -> Cell(s.name, a)).reverse.toList
         val r = eval(f.body, env)
         depth -= 1
         r match
@@ -89,7 +89,7 @@ class Interpreter(p: Program, out: Output, limit: long)
                 part match
                     Text(t) -> w.write(t)
                     Interp(x) -> w.write(valueText(eval(x, env)?, p, false))
-            Ok(StrV(w.text()))
+            Ok(StrV(w.text))
         Name(n, _) -> lookup(env, n) match
             Some(c) -> Ok(c.value)
             None -> Ok(VariantV(n, Vector.empty[Value]()))
@@ -97,7 +97,7 @@ class Interpreter(p: Program, out: Output, limit: long)
             val b = Buffer[Value]()
             for x in items
                 b.append(eval(x, env)?)
-            Ok(ArrayV(b.toVector()))
+            Ok(ArrayV(b.toVector))
         ArrayRepeat(item, count, _) ->
             val v = eval(item, env)?
             val n = integer(eval(count, env)?)
@@ -136,7 +136,7 @@ class Interpreter(p: Program, out: Output, limit: long)
                 _ -> false
             if yes
                 val v = eval(t, env)?
-                if o.isEmpty() then Ok(UnitV) else Ok(v)
+                if o.isEmpty then Ok(UnitV) else Ok(v)
             else o.map(x -> eval(x, env)).getOrElse(Ok(UnitV))
         Match(x, arms, at) ->
             val v = eval(x, env)?
@@ -154,8 +154,8 @@ class Interpreter(p: Program, out: Output, limit: long)
 
     private element(target: Value, k: long, at: Position) -> Result[Value, Halt] = target match
         ArrayV(items) ->
-            if 0 <= k < long(items.length()) then Ok(items(int(k)))
-            else fail(s"index $k is out of bounds for an array of length ${items.length()}", at)
+            if 0 <= k < long(items.length) then Ok(items(int(k)))
+            else fail(s"index $k is out of bounds for an array of length ${items.length}", at)
         v -> Ok(v)
 
     private block(stmts: List[Stmt], env: List[Cell]) -> Result[Value, Halt]
@@ -239,7 +239,7 @@ class Interpreter(p: Program, out: Output, limit: long)
                 RecordV(r, _) -> r
                 _ -> ""
             Ok((cell, steps ++ Vector(AtField(fieldIndex(record, n)))))
-        Name(n, _) -> Ok((lookup(env, n).get(), Vector.empty[Step]()))
+        Name(n, _) -> Ok((lookup(env, n).get, Vector.empty[Step]()))
         _ -> Err(Fail("not a place", startOf(target)))
 
     private load(v: Value, steps: Vector[Step]) -> Result[Value, Halt]
@@ -254,7 +254,7 @@ class Interpreter(p: Program, out: Output, limit: long)
 
     // `v` with the place `steps` reach, from step `from` on, holding `x`.
     private store(v: Value, steps: Vector[Step], from: int, x: Value) -> Result[Value, Halt]
-        if from == steps.length() then return Ok(x)
+        if from == steps.length then return Ok(x)
         steps(from) match
             AtIndex(k, at) -> v match
                 ArrayV(items) ->
@@ -339,7 +339,7 @@ class Interpreter(p: Program, out: Output, limit: long)
 
     // The values of a call's arguments in the order of the parameters or fields they are for.
     private ordered(params: Vector[Slot], args: List[Arg], env: List[Cell]) -> Result[Vector[Value], Halt]
-        val slots = Array.fill[Value](params.length(), UnitV)
+        val slots = Array.fill[Value](params.length, UnitV)
         var position = 0
         for a in args
             val v = eval(a.value, env)?
@@ -348,7 +348,7 @@ class Interpreter(p: Program, out: Output, limit: long)
                     slots(position) = v
                     position += 1
                 Some(n) -> slots(params.indexWhere(q -> q.name == n)) = v
-        Ok(slots.toVector())
+        Ok(slots.toVector)
 
     private call(f: Expr, args: List[Arg], env: List[Cell]) -> Result[Value, Halt] = f match
         Name(n, at) ->
@@ -369,7 +369,7 @@ class Interpreter(p: Program, out: Output, limit: long)
             val vs = Buffer[Value]()
             for a in args
                 vs.append(eval(a.value, env)?)
-            builtin(md, n, vs.toVector(), at)
+            builtin(md, n, vs.toVector, at)
         _ -> fail("not a function", startOf(f))
 
     private conversion(n: string, x: Value, at: Position) -> Result[Value, Halt] = (n, x) match

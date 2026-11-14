@@ -8,7 +8,7 @@ module tests
 import dev.avinlang.parsing.{Error, Failure, Parser, Success, accept, commit, err, failure, ident, literal, parse, parseAll, rep, repsep, stringLiteral, wholeNumber}
 
 
-lazy val element: Parser[long] = number | list ^^ (xs -> long(xs.length()))
+lazy val element: Parser[long] = number | list ^^ (xs -> long(xs.length))
 
 lazy val list: Parser[List[long]] = literal("[") ~> repsep(element, literal(",")) <~ literal("]")
 

@@ -21,7 +21,7 @@ lines(line: string, n: int) -> string
     for _ in 0..<n
         out.write(line)
         out.write("\n")
-    out.text()
+    out.text
 
 @test("a file without a mistake reports none")
 clean()
@@ -59,15 +59,15 @@ fiveErrors()
 @test("many errors, each reported once and in order")
 manyErrors()
     val r = parseModule("module m\nfn f() {\n" + lines("    a b", 40) + "}\n")
-    assertEq(r.errors().length(), 40)
+    assertEq(r.errors().length, 40)
     assertEq(s"${r.errors()(0)}", "3:7: expected operator, end of line or `}`, found 'b'")
     assertEq(s"${r.errors()(39)}", "42:7: expected operator, end of line or `}`, found 'b'")
     val decls = parseModule("module m\n" + lines("fn (", 25) + "fn ok() { }\n")
-    assertEq(decls.errors().length(), 25)
+    assertEq(decls.errors().length, 25)
     assertEq(s"${decls.errors()(24)}", "26:4: expected name, found '('")
-    assertEq(showModule(decls.get()).stripPrefix("(module m)\n").split("\n").length(), 26)
+    assertEq(showModule(decls.get()).stripPrefix("(module m)\n").split("\n").length, 26)
     val types = parseModule("module m\n" + lines("type = 1", 30))
-    assertEq(types.errors().length(), 30)
+    assertEq(types.errors().length, 30)
     assertEq(s"${types.errors()(29)}", "31:6: expected name, found '='")
 
 @test("a statement resumes before the `}` of its block, which closes the block")
@@ -173,4 +173,4 @@ commands()
     // Without a syntax error, the checker's mistakes are what is reported.
     checkSource("t.kite", "module t\nimport io\nfn main() {\n    io.println(y)\n}\n") match
         Ok(_) -> assertEq("checked", "refused")
-        Err(lines) -> assertEq(lines.length(), 1)
+        Err(lines) -> assertEq(lines.length, 1)

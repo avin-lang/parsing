@@ -36,10 +36,10 @@ class Word(val text: string): Positional, Tagged
 
 lazy val numbers: Parser[List[long]] = repsep(number, literal(","))
 
-lazy val digit: Parser[char] = elem("digit", c -> c.isDigit())
+lazy val digit: Parser[char] = elem("digit", c -> c.isDigit)
 
 // `if` as a keyword, not the start of a longer name.
-lazy val ifKeyword: Parser[string] = literal("if") <~ not(elem("letter", c -> c.isLetter()))
+lazy val ifKeyword: Parser[string] = literal("if") <~ not(elem("letter", c -> c.isLetter))
 
 // `<b>text</b>`: the closing tag must repeat the opening one.
 lazy val tagged: Parser[string] = literal("<") ~> ident.flatMap(open -> literal(">") ~> ident <~ literal("</") <~ literal(open) <~ literal(">"))
@@ -58,7 +58,7 @@ repetitions()
 
 @test("rep1 with a first parser reads it once, then the other as many times as it succeeds")
 repetitionWithFirst()
-    val name = rep1(elem("letter", c -> c.isLetter()), elem("letter or digit", c -> c.isLetterOrDigit()))
+    val name = rep1(elem("letter", c -> c.isLetter), elem("letter or digit", c -> c.isLetterOrDigit))
     assertEq(all(name, "a12b"), "[a, 1, 2, b]")
     assertEq(all(name, "a"), "[a]")
     assertEq(all(name, "1a"), "failure 1:1: expected letter, found '1'")
@@ -150,7 +150,7 @@ refusedLiterals()
     assertEq(all(literal("x") | ifKeyword, "iffy"), "failure 1:1: expected `x` or `if`, found 'i'")
     assertEq(all(ifKeyword | ident, "iffy"), "iffy")
     // The literal just before the look ahead, not an earlier one.
-    assertEq(all(literal("a") ~ literal("if") <~ not(elem("letter", c -> c.isLetter())), "a iffy"), "failure 1:3: expected `if`, found 'i'")
+    assertEq(all(literal("a") ~ literal("if") <~ not(elem("letter", c -> c.isLetter)), "a iffy"), "failure 1:3: expected `if`, found 'i'")
     // A literal read inside the look ahead is not the one named.
     assertEq(all(literal("a") <~ not(literal("b") ~ literal("c")), "abc"), "failure 1:1: expected `a`, found 'a'")
     // Not when something was read between the literal and the look ahead.
@@ -173,8 +173,8 @@ positions()
 positionedOnce()
     assertEq(all(positioned(literal("a") ^^ (_ -> placed("a", Position(7, 3, 4)))) ^^ (n -> n.where()), "  a"), "a@3:4")
     assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.where()), "  a"), "a@1:3")
-    assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.pos.isDefined()), "a"), "true")
-    assertEq(Node("n").pos.isEmpty(), true)
+    assertEq(all(positioned(literal("a") ^^ (_ -> Node("a"))) ^^ (n -> n.pos.isDefined), "a"), "true")
+    assertEq(Node("n").pos.isEmpty, true)
     val inner = positioned(literal("b") ^^ (v -> Node(v)))
     assertEq(all(positioned(literal("a") ~> inner) ^^ (n -> n.where()), "a  b"), "b@1:4")
 
@@ -192,7 +192,7 @@ positionalField()
     p.setPos(Position(9, 4, 2))
     assertEq(n.where(), "n@4:2")
     assertEq(p.pos.map(at -> at.offset).getOrElse(-1), 9)
-    assertEq(Node("m").pos.isEmpty(), true)
+    assertEq(Node("m").pos.isEmpty, true)
 
 @test("subclasses, objects and classes with other traits mix in Positional, and positioned sets each")
 positionalShapes()
@@ -267,7 +267,7 @@ longest()
 values()
     assertEq(all(success(long(42)), ""), "42")
     assertEq(all(literal("yes") ^^^ true, "yes"), "true")
-    assertEq(all(literal("abc").map(s -> s.byteLength()), "abc"), "3")
+    assertEq(all(literal("abc").map(s -> s.byteLength), "abc"), "3")
     assertEq(all(failure[int]("anything at all") | success(7), "x"), "failure 1:1: expected anything at all or end of input, found 'x'")
     assertEq(all(failure[int]("anything at all") | success(7), ""), "7")
 

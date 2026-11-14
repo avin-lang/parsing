@@ -16,7 +16,7 @@ under Running a parser, and read a token after it.
 ## Characters
 
 The character tests a grammar needs, `isDigit`, `isLetter`, `isLetterOrDigit` and `isWhitespace`,
-are methods of `char` in the core library: `elem("digit", c -> c.isDigit())`. This library keeps
+are methods of `char` in the core library: `elem("digit", c -> c.isDigit)`. This library keeps
 none of its own.
 
 The input is UTF-8, so moving past a character means moving past the bytes that encode it, between
@@ -33,10 +33,10 @@ A name is what most programming languages call an identifier: a letter or `_` to
 letters, digits and `_`.
 
     // Whether `c` may begin a name: a letter or `_`.
-    private startsName(c: char) -> bool = c == '_' || c.isLetter()
+    private startsName(c: char) -> bool = c == '_' || c.isLetter
 
     // Whether `c` may continue a name: a letter, a digit or `_`.
-    private continuesName(c: char) -> bool = c == '_' || c.isLetterOrDigit()
+    private continuesName(c: char) -> bool = c == '_' || c.isLetterOrDigit
 
 ## Helpers for reading
 
@@ -68,7 +68,7 @@ The white space every grammar skips unless it says otherwise is white space in a
 
     // White space in any script, none included.
     private lazy val spaces: Parser[unit] = Parser(input ->
-        skip(input, c -> c.isWhitespace())
+        skip(input, c -> c.isWhitespace)
         Some(()))
 
 ## One character
@@ -109,7 +109,7 @@ same with the message worked out from the character that was refused, and `elem(
         Some(c))
 
 `acceptMatch(expected, f)` reads one character `f` is defined at and answers `f` of it, so a
-character becomes a value in one step: `acceptMatch("digit", match c if c.isDigit() -> int(c) - 48)`.
+character becomes a value in one step: `acceptMatch("digit", match c if c.isDigit -> int(c) - 48)`.
 `accept(expected, f)` is the same.
 
     // `f` of one character `f` is defined at, described as `expected` when there is none.
@@ -131,7 +131,7 @@ reported at the character that differs.
 
     // Exactly the characters of `es`, in order.
     acceptSeq(es: Iterable[char]) -> Parser[List[char]]
-        val chars = es.toList()
+        val chars = es.toList
         Parser(input ->
             for e in chars
                 if input.atEnd() || input.first() != e then return input.fail(s"`$e`")
@@ -151,7 +151,7 @@ refuses what follows reports the literal as expected, as `input.lavin` explains.
     // Exactly `s`, after white space.
     literal(s: string) -> Parser[string]
         val what = s"`$s`"
-        val n = s.byteLength()
+        val n = s.byteLength
         Parser(input ->
             if !input.handleWhiteSpace() then return None
             val start = input.offset

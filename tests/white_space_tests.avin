@@ -8,11 +8,11 @@ import dev.avinlang.parsing.{Parser, RegexParsers, acceptSeq, elem, err, guard, 
 
 // Block comments as white space, a `/*` never closed an error where it begins.
 object Blocky: RegexParsers
-    override whiteSpace() -> Parser[unit] = rep(elem("space", c -> c.isWhitespace()) ^^^ () | closedComment | unclosedComment) ^^^ ()
+    override whiteSpace() -> Parser[unit] = rep(elem("space", c -> c.isWhitespace) ^^^ () | closedComment | unclosedComment) ^^^ ()
 
-lazy val closedComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(not(acceptSeq("*/".chars())) ~> elem("comment", c -> true)) ~ acceptSeq("*/".chars()) ^^^ ()
+lazy val closedComment: Parser[unit] = acceptSeq("/*".chars) ~ rep(not(acceptSeq("*/".chars)) ~> elem("comment", c -> true)) ~ acceptSeq("*/".chars) ^^^ ()
 
-lazy val unclosedComment: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err[unit](commentOpen)
+lazy val unclosedComment: Parser[unit] = guard(acceptSeq("/*".chars)) ~> err[unit](commentOpen)
 
 val commentOpen = "`*/` to close the comment that begins here"
 
@@ -22,7 +22,7 @@ object Worded: RegexParsers
 
 // Comments run from `#` to the end of the line, and count as white space.
 object Commented: RegexParsers
-    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace()) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
 
     lazy val entry: Parser[string] = ident ~ (literal("=") ~> ident) ^^ (match (k, v) -> s"$k=$v")
 

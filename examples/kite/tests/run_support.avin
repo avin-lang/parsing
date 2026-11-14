@@ -10,9 +10,9 @@ import kite.{Captured, checkModule, parseModule, runSource}
 errs(text: string) -> string
     val r = parseModule(text)
     val syntax = r.errors()
-    if !syntax.isEmpty() then return syntax.map(e -> s"syntax $e").mkString("\n")
+    if !syntax.isEmpty then return syntax.map(e -> s"syntax $e").mkString("\n")
     val (_, found) = checkModule(r.get())
-    if found.isEmpty() then "ok" else found.map(d -> s"${d.at}: ${d.message}").mkString("\n")
+    if found.isEmpty then "ok" else found.map(d -> s"${d.at}: ${d.message}").mkString("\n")
 
 // The statements of `main`, which begin on line 4, after `module t`, `import io` and the `fn` line.
 inMain(text: string) -> string = "module t\nimport io\nfn main() {\n" + text + "\n}\n"

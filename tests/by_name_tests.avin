@@ -69,7 +69,7 @@ wrappersByName()
 
 // Rules that refer to each other and to themselves through every kind of combinator, with no rule
 // complete when another first mentions it.
-lazy val brackets: Parser[int] = literal("(") ~> rep(brackets) <~ literal(")") ^^ (xs -> xs.length())
+lazy val brackets: Parser[int] = literal("(") ~> rep(brackets) <~ literal(")") ^^ (xs -> xs.length)
 lazy val chained: Parser[int] = literal("a") ~> opt(chained) ^^ (o -> o match
     Some(n) -> n + 1
     None -> 1)

@@ -7,7 +7,7 @@ import kite.{parseExpr, parseModule, parsePattern, parseStmt, parseType, show, s
 
 shown[T](r: ParseResult[T], f: T -> string) -> string
     val es = r.errors()
-    if es.isEmpty() then return f(r.get())
+    if es.isEmpty then return f(r.get())
     es.map(described).mkString("\n")
 
 // An error as `failure` or `error`, its line and column, and its message.
@@ -28,5 +28,5 @@ file(text: string) -> string = shown(parseModule(text), showModule)
 // as `file` shows it.
 body(text: string) -> string
     val r = parseModule("module m\nfn f() {\n" + text + "\n}")
-    if !r.errors().isEmpty() then return shown(r, showModule)
-    showModule(r.get()).stripPrefix("(module m)\n(fn f () (block").stripSuffix(")").stripSuffix(")").trim()
+    if !r.errors().isEmpty then return shown(r, showModule)
+    showModule(r.get()).stripPrefix("(module m)\n(fn f () (block").stripSuffix(")").stripSuffix(")").trim

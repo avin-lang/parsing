@@ -146,7 +146,7 @@ The token parsers skip white space first:
 | `stringLiteral` | a double-quoted string with `\"`, `\'`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX` | `string`, as written |
 
 The numbers and strings answer their text, for the grammar to convert to the type it wants.
-The character tests for `elem` and `acceptIf` are the core `char` methods: `c.isDigit()`, `c.isLetter()`, `c.isLetterOrDigit()`, `c.isWhitespace()`. A parser the library
+The character tests for `elem` and `acceptIf` are the core `char` methods: `c.isDigit`, `c.isLetter`, `c.isLetterOrDigit`, `c.isWhitespace`. A parser the library
 does not offer is made by giving the function: `Parser(input -> …)`, using `input.atEnd()`,
 `input.first()`, `input.offset`, `input.handleWhiteSpace()` and `input.fail(what)`. White space
 can hold an error, so a parser that skips it checks: `if !input.handleWhiteSpace() then return
@@ -182,7 +182,7 @@ script; a grammar that wants otherwise is an object that is a `RegexParsers`, ov
 ```avin
 object Config: RegexParsers
     // Comments run from `#` to the end of the line, and count as white space.
-    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace()) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
 
     lazy val entry: Parser[(string, string)] = ident ~ (literal("=") ~> ident)
 
@@ -198,7 +198,7 @@ reported as the last thing white space expected, where it expected it, so `err` 
 where it stands:
 
 ```avin
-lazy val unclosed: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err("`*/` to close the comment that begins here")
+lazy val unclosed: Parser[unit] = guard(acceptSeq("/*".chars)) ~> err("`*/` to close the comment that begins here")
 ```
 
 The token about to be read fails with the error, which is final.

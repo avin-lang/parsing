@@ -183,7 +183,7 @@ is made where the parser runs rather than kept and shared by every thread that r
 `p ^? f` filters and maps in one step: `f` is a `PartialFunction`, and where it is not defined at
 the value the parser fails, back where it started so that an alternative can try the same text. A
 `match` with nothing before it, written where a partial function is expected, is one:
-`wholeNumber ^? (match s if s.byteLength() <= 3 -> s.toIntOption().getOrElse(0))`. The second form says what
+`wholeNumber ^? (match s if s.byteLength <= 3 -> s.toIntOption().getOrElse(0))`. The second form says what
 was wanted, given the value that was refused; the first says `value the function is defined at`.
 With two arguments it is called with a dot: `p.^?(f, n -> s"$n is out of range")`.
 
@@ -335,7 +335,7 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
             val items = Buffer[T]()
             for _ in 0..<num
                 items.addOne(q.run(input)?)
-            Some(items.toList()))
+            Some(items.toList))
 
 `repsep` reads values with separators between them. A separator promises another value, so
 `[1, 2,]` fails at the `]` rather than quietly accepting the trailing comma. The loop is
@@ -384,7 +384,7 @@ any error it recovered from with it, as `recover` below explains.
                     input.offset = start
                     input.dropErrors(mark)
                     break
-        Some(items.toList())
+        Some(items.toList)
 
 In `separated` the separator is optional but the value after it is not. A separator that fails ends
 the list where it began; a value that fails after a separator fails the list, which is what makes
@@ -407,7 +407,7 @@ a trailing separator an error. `?` returns the `None` at once.
                 input.dropErrors(mark)
                 break
             items.addOne(a)
-        Some(items.toList())
+        Some(items.toList)
 
 ## Optional parts and commit points
 
@@ -530,7 +530,7 @@ value. Assigning `pos` directly replaces it, for a program that means to.
         var pos: Option[Position] = None
 
         // Records where the value began, unless it already has a position.
-        setPos(at: Position) = if pos.isEmpty() then pos = Some(at)
+        setPos(at: Position) = if pos.isEmpty then pos = Some(at)
 
 `positioned(p)` is `p` with its value's position set to where `p` began. It skips the grammar's
 white space first, so the position is the value's own and not that of the space before it.
@@ -544,7 +544,7 @@ white space first, so the position is the value's own and not that of the space 
             val start = input.offset
             q.run(input) match
                 Some(a) ->
-                    if a.pos.isEmpty() then a.setPos(input.position(start))
+                    if a.pos.isEmpty then a.setPos(input.position(start))
                     Some(a)
                 None -> None)
 
@@ -624,7 +624,7 @@ stack.
                 fs.addOne(g)
                 values.addOne(v.run(input)?)
             var acc = first
-            var i = fs.length() - 1
+            var i = fs.length - 1
             while i >= 0
                 acc = fs(i)(values(i + 1), acc)
                 i -= 1
@@ -733,7 +733,7 @@ grammar, so it is set by a grammar that is a `RegexParsers`:
 ```avin
 // Comments run from `#` to the end of the line, and count as white space.
 object Config: RegexParsers
-    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace()) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
+    override whiteSpace() -> Parser[unit] = rep(elem("white space", c -> c.isWhitespace) ^^^ () | literal("#") ~ rep(elem("comment", c -> c != '\n')) ^^^ ()) ^^^ ()
 
     lazy val entry: Parser[(string, string)] = ident ~ (literal("=") ~> ident)
 

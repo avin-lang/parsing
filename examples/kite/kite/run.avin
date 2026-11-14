@@ -7,7 +7,7 @@ module kite
 parsed(file: string, text: string) -> Result[Module, Vector[string]]
     val r = parseModule(text)
     val errors = r.errors()
-    if errors.isEmpty() then Ok(r.get()) else Err(errors.map(e -> s"$file:$e").toVector())
+    if errors.isEmpty then Ok(r.get()) else Err(errors.map(e -> s"$file:$e").toVector)
 
 // The tree of a source text, as `showModule` prints it, or its syntax errors.
 parseSource(file: string, text: string) -> Result[string, Vector[string]] = parsed(file, text).map(showModule)
@@ -16,7 +16,7 @@ parseSource(file: string, text: string) -> Result[string, Vector[string]] = pars
 checkSource(file: string, text: string) -> Result[Program, Vector[string]]
     val m = parsed(file, text)?
     val (program, errors) = checkModule(m)
-    if errors.isEmpty() then Ok(program) else Err(errors.map(d -> s"$file:${d.at}: ${d.message}"))
+    if errors.isEmpty then Ok(program) else Err(errors.map(d -> s"$file:${d.at}: ${d.message}"))
 
 // Runs a source text, writing its output to `out`; answers its mistakes, or the runtime error that
 // stopped it.

@@ -33,18 +33,18 @@ fails with it, so the error is found wherever white space is skipped: before a s
 expression, at the end of the file.
 
     // `//` to the end of the line, the line end not included.
-    lazy val lineComment: Parser[unit] = acceptSeq("//".chars()) ~ rep(elem("comment", c -> c != '\n')) ^^^ ()
+    lazy val lineComment: Parser[unit] = acceptSeq("//".chars) ~ rep(elem("comment", c -> c != '\n')) ^^^ ()
 
     // `/*` to the matching `*/`, other block comments nested inside.
-    lazy val blockComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(blockComment | not(acceptSeq("*/".chars())) ~> elem("comment", c -> true) ^^^ ()) ~ acceptSeq("*/".chars()) ^^^ ()
+    lazy val blockComment: Parser[unit] = acceptSeq("/*".chars) ~ rep(blockComment | not(acceptSeq("*/".chars)) ~> elem("comment", c -> true) ^^^ ()) ~ acceptSeq("*/".chars) ^^^ ()
 
     // A `/*` that begins no whole comment: an error where it stands.
-    lazy val openComment: Parser[unit] = guard(acceptSeq("/*".chars())) ~> err[unit](commentMessage)
+    lazy val openComment: Parser[unit] = guard(acceptSeq("/*".chars)) ~> err[unit](commentMessage)
 
     val commentMessage = "`*/` to close the comment that begins here"
 
     // Everything skipped before a token.
-    lazy val space: Parser[unit] = rep(elem("space", c -> c.isWhitespace()) ^^^ () | lineComment | blockComment | openComment) ^^^ ()
+    lazy val space: Parser[unit] = rep(elem("space", c -> c.isWhitespace) ^^^ () | lineComment | blockComment | openComment) ^^^ ()
 
 ## Line ends
 
@@ -162,7 +162,7 @@ text held no keyword there at all.
     val keywords = ["module", "import", "fn", "type", "let", "var", "if", "else", "while", "for", "in", "match", "return", "break", "continue", "true", "false"]
 
     // Whether `c` may continue a name.
-    nameChar(c: char) -> bool = c == '_' || c.isLetterOrDigit()
+    nameChar(c: char) -> bool = c == '_' || c.isLetterOrDigit
 
     // The keyword `word`.
     kw(word: string) -> Parser[string] = literal(word) <~ not(elem("letter", nameChar))
@@ -196,7 +196,7 @@ The number is read by a parser written as a function of the input, because its p
 and no piece is worth reporting on its own.
 
     // The byte at `at` as a number, or -1 past the end of `text`.
-    byteOf(text: string, at: int) -> int = if at < text.byteLength() then int(text.byteAt(at)) else -1
+    byteOf(text: string, at: int) -> int = if at < text.byteLength then int(text.byteAt(at)) else -1
 
     // Whether the byte at `at` is an ASCII digit.
     digitAt(text: string, at: int) -> bool = int('0') <= byteOf(text, at) <= int('9')
@@ -286,7 +286,7 @@ value. Anything else after a `\` is an error at that character, and final.
     scalar(ds: List[int]) -> Parser[string]
         // Once past the largest scalar value the code stops growing, so any number of digits fits in an `int`.
         val code = ds.foldLeft(0, (code, d) -> if code > 0x10ffff then code else code * 16 + d)
-        if ds.length() > 6 || code > 0x10ffff || 0xd800 <= code <= 0xdfff then err[string]("Unicode scalar value (at most 10FFFF, and not D800 to DFFF) in `\\u{…}`")
+        if ds.length > 6 || code > 0x10ffff || 0xd800 <= code <= 0xdfff then err[string]("Unicode scalar value (at most 10FFFF, and not D800 to DFFF) in `\\u{…}`")
         else success(s"${char(code)}")
 
     // `\` and an escape.
@@ -588,7 +588,7 @@ it does in the grammar.
     lazy val skippedPiece: Parser[unit] = skippedComment | lineComment | skippedString | skippedGroup
 
     // `/*` to its `*/`, comments nested inside, or to the end of the text.
-    lazy val skippedComment: Parser[unit] = acceptSeq("/*".chars()) ~ rep(skippedComment | not(acceptSeq("*/".chars())) ~> skipped(c -> false)) ~ opt(acceptSeq("*/".chars())) ^^^ ()
+    lazy val skippedComment: Parser[unit] = acceptSeq("/*".chars) ~ rep(skippedComment | not(acceptSeq("*/".chars)) ~> skipped(c -> false)) ~ opt(acceptSeq("*/".chars)) ^^^ ()
 
     // `"` to its `"`, escapes and all, or to the end of its line.
     lazy val skippedString: Parser[unit] = elem('"') ~ rep(elem('\\') ~> skipped(c -> false) | skipped(c -> c == '"' || c == '\n')) ~ opt(elem('"')) ^^^ ()
@@ -603,7 +603,7 @@ it does in the grammar.
     lazy val restOfTopLine: Parser[unit] = rep(skippedPiece | skipped(c -> c == '\n')) ^^^ ()
 
     // Whether the line starting here begins with `fn` or `type`. Reads nothing.
-    lazy val declarationLine: Parser[unit] = guard(rep(elem(' ') | elem('\t')) ~ (acceptSeq("fn".chars()) | acceptSeq("type".chars())) ~ not(elem("letter", nameChar))) ^^^ ()
+    lazy val declarationLine: Parser[unit] = guard(rep(elem(' ') | elem('\t')) ~ (acceptSeq("fn".chars) | acceptSeq("type".chars)) ~ not(elem("letter", nameChar))) ^^^ ()
 
 An error found at the first token of a line, in a statement that began on a line before, was made
 on the line before: `let x =` with its value forgotten is reported at the next line's first token,
@@ -645,7 +645,7 @@ A file is its `module` line, its imports, and its declarations, each on lines of
 or a declaration that cannot be read is an error the file goes on past; a file with no `module` line
 has nothing to go on with.
 
-    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(guard(kw("import")) ~> importLine) ~ rep(declaration) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports.flatMap(i -> i.toList()), items, at))
+    lazy val sourceFile: Parser[Module] = here ~ (kw("module") ~! (dottedName <~ lineEnd)) ~ rep(guard(kw("import")) ~> importLine) ~ rep(declaration) ^^ (match (((at, (_, n)), imports), items) -> Module(n, imports.flatMap(i -> i.toList), items, at))
 
     // An import and its line end, or `None` for one that cannot be read, resuming at its line's end.
     lazy val importLine: Parser[Option[Import]] = statementLike(here ~ (kw("import") ~! (dottedName <~ lineEnd)) ^^ (match (at, (_, n)) -> Some(Import(n, at))), at -> None)

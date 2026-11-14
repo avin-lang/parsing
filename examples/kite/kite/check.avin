@@ -138,7 +138,7 @@ class Checker(m: Module)
         checkMain()
         for f in order
             checkFunction(f)
-        (Program(records, sums, variants, functions), errors.toVector().sortBy(d -> d.at.offset))
+        (Program(records, sums, variants, functions), errors.toVector.sortBy(d -> d.at.offset))
 
     private report(message: string, at: Position) = errors.append(Diagnostic(message, at))
 
@@ -149,7 +149,7 @@ class Checker(m: Module)
         for item in m.items
             item match
                 TypeDecl(n, d, at) ->
-                    if builtinType(n).isDefined() then report(s"`$n` is a built-in type", at)
+                    if builtinType(n).isDefined then report(s"`$n` is a built-in type", at)
                     else typeDecls.get(n) match
                         Some(prev) -> already(n, at, prev.at)
                         None -> typeDecls = typeDecls.updated(n, TypeEntry(d, at))
@@ -159,7 +159,7 @@ class Checker(m: Module)
                 TypeDecl(n, d, at) if isDeclared(n, at) -> d match
                     Alias(_) -> aliasType(n)
                     Record(fields) -> records = records.updated(n, slots(fields))
-                    Sum(vs) -> sums = sums.updated(n, vs.map(v -> VariantSig(v.name, n, slots(v.fields))).toVector())
+                    Sum(vs) -> sums = sums.updated(n, vs.map(v -> VariantSig(v.name, n, slots(v.fields))).toVector)
                 _ -> ()
 
     // Whether the type declaration of `n` at `at` is the one that holds the name.
@@ -173,7 +173,7 @@ class Checker(m: Module)
             seen.find(g -> g.name == f.name).foreach(g -> already(f.name, f.at, g.at))
             seen = Cons(f, seen)
             out.append(Slot(f.name, resolve(f.declared)))
-        out.toVector()
+        out.toVector
 
     resolve(t: TypeRef) -> Ty = t match
         NamedType(n, at) -> builtinType(n) match
@@ -220,7 +220,7 @@ class Checker(m: Module)
                     val ps = slots(params.map(p -> FieldDecl(p.name, p.declared, p.at)))
                     val r = result.map(t -> resolve(t)).getOrElse(UnitT)
                     val f = Function(n, ps, r, body, at)
-                    if builtinType(n).isDefined() then report(s"`$n` is a built-in type", at)
+                    if builtinType(n).isDefined then report(s"`$n` is a built-in type", at)
                     elif declareValue(n, FnEntity(f), at)
                         functions = functions.updated(n, f)
                         order.append(f)
@@ -228,9 +228,9 @@ class Checker(m: Module)
                     Record(_) -> declareValue(n, RecordEntity(n, at), at)
                     Sum(vs) ->
                         for v in vs
-                            if builtinType(v.name).isDefined() then report(s"`${v.name}` is a built-in type", v.at)
+                            if builtinType(v.name).isDefined then report(s"`${v.name}` is a built-in type", v.at)
                             elif declareValue(v.name, VariantEntity(VariantSig(v.name, n, Vector.empty[Slot]()), v.at), v.at)
-                                val sig = sums(n).find(s -> s.name == v.name).get()
+                                val sig = sums(n).find(s -> s.name == v.name).get
                                 values = values.updated(v.name, VariantEntity(sig, v.at))
                                 variants = variants.updated(v.name, sig)
                     Alias(_) -> ()
@@ -247,7 +247,7 @@ class Checker(m: Module)
     private checkMain() = functions.get("main") match
         None -> report("a program needs `fn main()`", m.at)
         Some(f) ->
-            if !f.params.isEmpty() then report("`main` takes no parameters", f.at)
+            if !f.params.isEmpty then report("`main` takes no parameters", f.at)
             if f.result != UnitT then report("`main` returns nothing", f.at)
 
     private checkFunction(f: Function)
@@ -272,13 +272,13 @@ class Checker(m: Module)
         locals = Cons(Local(n, t, kind, at), locals)
 
     private isModule(n: string) -> bool
-        if local(n).isDefined() then return false
+        if local(n).isDefined then return false
         values.get(n) match
             Some(ModuleEntity(_, _)) -> true
             _ -> false
 
     private unknownName(n: string, at: Position)
-        if builtinType(n).isDefined() || typeDecls.contains(n) then report(s"`$n` is a type, not a value", at)
+        if builtinType(n).isDefined || typeDecls.contains(n) then report(s"`$n` is a type, not a value", at)
         elif builtinModule(n) then report(s"`$n` is not imported; add `import $n`", at)
         else report(s"unknown name `$n`", at)
 
@@ -299,10 +299,10 @@ class Checker(m: Module)
 
     private block(stmts: List[Stmt], at: Position, want: Option[Ty]) -> Ty
         val saved = locals
-        val last = stmts.length() - 1
+        val last = stmts.length - 1
         var t: Ty = UnitT
         var valued = false
-        for (s, i) in stmts.zipWithIndex()
+        for (s, i) in stmts.zipWithIndex
             s match
                 ExprStmt(x) if i == last ->
                     t = check(x, want)
@@ -347,19 +347,19 @@ class Checker(m: Module)
                 None -> sound = false
             val bt = check(arm.body, want)
             locals = saved
-            if want.isEmpty() then join(result, bt) match
+            if want.isEmpty then join(result, bt) match
                 Some(j) -> result = j
                 None ->
                     report(s"the arms of `match` have different types, `${showTy(result)}` and `${showTy(bt)}`", startOf(arm.body))
                     result = ErrorT
-        if sound then exhaustive(pats.toVector(), arms, st, at)
-        want.getOrElse(if arms.isEmpty() then ErrorT else result)
+        if sound then exhaustive(pats.toVector, arms, st, at)
+        want.getOrElse(if arms.isEmpty then ErrorT else result)
 
     // Reports an arm no value can reach, and a value no arm matches.
     private exhaustive(pats: Vector[Pat], arms: List[Arm], st: Ty, at: Position)
-        for (arm, i) in arms.zipWithIndex()
+        for (arm, i) in arms.zipWithIndex
             val before = pats.take(i).map(p -> Vector(p))
-            if useful(before, Vector(pats(i)), Vector(st)).isEmpty() then report("this arm can never match", patternAt(arm.pattern))
+            if useful(before, Vector(pats(i)), Vector(st)).isEmpty then report("this arm can never match", patternAt(arm.pattern))
         useful(pats.map(p -> Vector(p)), Vector(Wild), Vector(st)).foreach(w -> report(s"this `match` does not cover every `${showTy(st)}` value, such as `${showPat(w(0))}`", at))
 
     // The constructors of a type that has a fixed set of them, each with the types of its parts.
@@ -380,7 +380,7 @@ class Checker(m: Module)
             row(0) match
                 Ctor(k, args) -> if k == key then out.append(args ++ row.drop(1))
                 Wild -> out.append(wilds(n) ++ row.drop(1))
-        out.toVector()
+        out.toVector
 
     // The rows whose first pattern matches anything, without it.
     private defaults(rows: Vector[Vector[Pat]]) -> Vector[Vector[Pat]]
@@ -389,26 +389,26 @@ class Checker(m: Module)
     // A value the patterns `v` match and no row does, as patterns, if there is one: whether a row of
     // patterns is useful after `rows`.
     private useful(rows: Vector[Vector[Pat]], v: Vector[Pat], tys: Vector[Ty]) -> Option[Vector[Pat]]
-        if v.isEmpty() then return if rows.isEmpty() then Some(Vector.empty[Pat]()) else None
+        if v.isEmpty then return if rows.isEmpty then Some(Vector.empty[Pat]()) else None
         val t = tys(0)
         v(0) match
             Ctor(k, args) ->
-                val n = args.length()
+                val n = args.length
                 useful(specialize(rows, k, n), args ++ v.drop(1), partTypes(t, k, n) ++ tys.drop(1)).map(w -> rebuilt(k, n, w))
             Wild ->
                 val used = rows.map(row -> row(0)).collect(match Ctor(k, _) -> k)
                 val all = ctors(t)
-                val complete = all.exists(cs -> !cs.isEmpty() && cs.forall(c -> used.contains(c.key)))
+                val complete = all.exists(cs -> !cs.isEmpty && cs.forall(c -> used.contains(c.key)))
                 if complete
-                    for c in all.get()
-                        val n = c.parts.length()
+                    for c in all.get
+                        val n = c.parts.length
                         useful(specialize(rows, c.key, n), wilds(n) ++ v.drop(1), c.parts ++ tys.drop(1)) match
                             Some(w) -> return Some(rebuilt(c.key, n, w))
                             None -> ()
                     return None
                 useful(defaults(rows), v.drop(1), tys.drop(1)).map(w ->
                     val unused = all.flatMap(cs -> cs.find(c -> !used.contains(c.key)))
-                    val missing: Pat = if used.isEmpty() then Wild else unused.map(c -> Ctor(c.key, wilds(c.parts.length()))).getOrElse(Wild)
+                    val missing: Pat = if used.isEmpty then Wild else unused.map(c -> Ctor(c.key, wilds(c.parts.length))).getOrElse(Wild)
                     Vector(missing) ++ w)
 
     private rebuilt(key: string, n: int, w: Vector[Pat]) -> Vector[Pat] = Vector[Pat](Ctor(key, w.take(n))) ++ w.drop(n)
@@ -449,16 +449,16 @@ class Checker(m: Module)
         if t != ct
             if t != ErrorT then report(s"the value matched is `${showTy(t)}`, not `$owner`", at)
             good = false
-        if subs.length() != fields.length()
-            report(s"`$n` has ${count(fields.length(), "field")}; the pattern gives ${subs.length()}", at)
+        if subs.length != fields.length
+            report(s"`$n` has ${count(fields.length, "field")}; the pattern gives ${subs.length}", at)
             good = false
         val parts = Buffer[Pat]()
-        for (s, i) in subs.zipWithIndex()
+        for (s, i) in subs.zipWithIndex
             val ft = if good then fields(i).ty else ErrorT
             pattern(s, ft) match
                 Some(q) -> parts.append(q)
                 None -> good = false
-        if good then Some(Ctor(n, parts.toVector())) else None
+        if good then Some(Ctor(n, parts.toVector)) else None
 
     // The type of an expression that is not a block, an `if` or a `match`.
     private leaf(e: Expr) -> Ty = e match
@@ -481,7 +481,7 @@ class Checker(m: Module)
                     join(el, t) match
                         Some(j) -> el = j
                         None -> report(s"expected `${showTy(el)}`, found `${showTy(t)}`", startOf(item))
-                ArrayT(el, long(items.length()))
+                ArrayT(el, long(items.length))
         ArrayRepeat(item, n, _) ->
             val t = check(item, None)
             n match
@@ -527,8 +527,8 @@ class Checker(m: Module)
             Some(FnEntity(_)) -> report(s"`$n` is a function; call it as `$n(…)`", at)
             Some(RecordEntity(_, _)) -> report(s"`$n` is a record; build one as `$n(…)`", at)
             Some(VariantEntity(sig, _)) ->
-                if sig.fields.isEmpty() then return SumT(sig.owner)
-                report(s"`$n` has ${count(sig.fields.length(), "field")}; build it as `$n(…)`", at)
+                if sig.fields.isEmpty then return SumT(sig.owner)
+                report(s"`$n` has ${count(sig.fields.length, "field")}; build it as `$n(…)`", at)
             Some(ModuleEntity(_, _)) -> report(s"`$n` is a module, not a value", at)
             None -> unknownName(n, at)
         ErrorT
@@ -568,7 +568,7 @@ class Checker(m: Module)
                 if isComparison(op) then BoolT else ErrorT
 
     private call(f: Expr, args: List[Arg]) -> Ty = f match
-        Name(n, at) if local(n).isEmpty() -> values.get(n) match
+        Name(n, at) if local(n).isEmpty -> values.get(n) match
             Some(FnEntity(fn)) ->
                 arguments(s"`$n` takes", "argument", fn.params, args, at)
                 fn.result
@@ -586,7 +586,7 @@ class Checker(m: Module)
                     "i64" -> conversion(n, IntT, args, at)
                     "f64" -> conversion(n, FloatT, args, at)
                     _ ->
-                        if builtinType(n).isDefined() || typeDecls.contains(n) then report(s"`$n` is a type, not a function", at)
+                        if builtinType(n).isDefined || typeDecls.contains(n) then report(s"`$n` is a type, not a function", at)
                         elif builtinModule(n) then report(s"`$n` is not imported; add `import $n`", at)
                         else report(s"unknown function `$n`", at)
                         unchecked(args)
@@ -609,9 +609,9 @@ class Checker(m: Module)
 
     // Matches a call's arguments to the parameters or fields, by position and then by name.
     private arguments(who: string, kind: string, params: Vector[Slot], args: List[Arg], at: Position)
-        val given = Array.fill(params.length(), false)
-        val tooMany = args.length() > params.length()
-        if tooMany then report(s"$who ${count(params.length(), kind)}, but ${args.length()} are given", at)
+        val given = Array.fill(params.length, false)
+        val tooMany = args.length > params.length
+        if tooMany then report(s"$who ${count(params.length, kind)}, but ${args.length} are given", at)
         var position = 0
         var named = false
         for a in args
@@ -620,7 +620,7 @@ class Checker(m: Module)
                     if named
                         report("a positional argument cannot follow a named one", startOf(a.value))
                         check(a.value, None)
-                    elif position >= params.length() then check(a.value, None)
+                    elif position >= params.length then check(a.value, None)
                     else
                         check(a.value, Some(params(position).ty))
                         given(position) = true
@@ -636,7 +636,7 @@ class Checker(m: Module)
                         given(i) = true
                         check(a.value, Some(params(i).ty))
         if !tooMany
-            for (p, i) in params.zipWithIndex()
+            for (p, i) in params.zipWithIndex
                 if !given(i) then report(s"no argument for `${p.name}`", at)
 
     private conversion(n: string, result: Ty, args: List[Arg], at: Position) -> Ty
@@ -652,7 +652,7 @@ class Checker(m: Module)
     private fieldOf(target: Expr, n: string, at: Position) -> Ty
         target match
             Name(md, _) if isModule(md) ->
-                if builtinFunction(md, n).isDefined() then report(s"`$md.$n` is a function; call it as `$md.$n(…)`", at)
+                if builtinFunction(md, n).isDefined then report(s"`$md.$n` is a function; call it as `$md.$n(…)`", at)
                 else report(s"module `$md` has no function `$n`", at)
                 return ErrorT
             _ -> ()

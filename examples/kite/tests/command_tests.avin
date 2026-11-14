@@ -9,11 +9,11 @@ parseCommand()
     assertEq(parseSource("a.kite", "module a\nimport io\nfn main() { io.println(\"x\") }"), Ok("(module a)\n(import io)\n(fn main () (block (call (. io println) \"x\")))"))
     assertEq(parseSource("a.kite", "module a\nfn main( {"), Err(Vector("a.kite:2:10: expected name or `)` to close `(` at 2:8, found '{'")))
     // A program that does not check still parses.
-    assertEq(parseSource("a.kite", "module a\nfn f() { nope }").isOk(), true)
+    assertEq(parseSource("a.kite", "module a\nfn f() { nope }").isOk, true)
 
 @test("check answers nothing for a sound program, and every mistake in one that is not")
 checkCommand()
-    assertEq(checkSource("a.kite", "module a\nfn main() {}").isOk(), true)
+    assertEq(checkSource("a.kite", "module a\nfn main() {}").isOk, true)
     assertEq(checkSource("dir/b.kite", "module b\nfn main() { let x: i64 = 1.0\nlet y = z }"), Err(Vector("dir/b.kite:2:26: expected `i64`, found `f64`", "dir/b.kite:3:9: unknown name `z`")))
     assertEq(checkSource("a.kite", "module a\nfn main( {"), Err(Vector("a.kite:2:10: expected name or `)` to close `(` at 2:8, found '{'")))
 

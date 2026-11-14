@@ -6,7 +6,7 @@ module kite
 // A string in Kite's own spelling: quoted, with its quotes, backslashes, braces and control
 // characters escaped.
 quoted(text: string) -> string
-    val body = text.chars().map(escaped).mkString("")
+    val body = text.chars.map(escaped).mkString("")
     s"\"$body\""
 
 // How a string writes the character `c`.
@@ -38,7 +38,7 @@ showPattern(p: Pattern) -> string = p match
     StrPat(t, _) -> quoted(t)
     BoolPat(v, _) -> s"$v"
     NamePat(n, _) -> n
-    VariantPat(n, fields, _) -> if fields.isEmpty() then s"($n)" else s"($n ${fields.map(showPattern).mkString(" ")})"
+    VariantPat(n, fields, _) -> if fields.isEmpty then s"($n)" else s"($n ${fields.map(showPattern).mkString(" ")})"
     ErrorPat(_) -> "(error)"
 
 private showPart(p: StrPart) -> string = p match
