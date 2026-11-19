@@ -4,15 +4,20 @@ Parser combinators for [Avin](https://github.com/avin-lang/avin). A grammar is a
 joined by operators that read like the grammar itself: `p ~ q` is `p` then `q`, `p | q` is `p` or
 else `q`, and `p ^^ f` turns what `p` read into a value.
 
-The library is written as literate Avin. Its three source files are Markdown documents that explain
+A grammar reads text, or a sequence of tokens a lexer has already made: every combinator is written
+once, against the `Reader` both kinds of input extend, and only the leaves differ.
+
+The library is written as literate Avin. Its four source files are Markdown documents that explain
 the design as they go, and are worth reading in this order:
 
-1. [`input.lavin`](dev/avinlang/parsing/input.lavin): the text being parsed, positions, white space,
-   and what a parse answers.
-2. [`parser.lavin`](dev/avinlang/parsing/parser.lavin): the parser, every combinator, and running a
+1. [`input.lavin`](dev/avinlang/parsing/input.lavin): the reader, the text being parsed, positions,
+   white space, and what a parse answers.
+2. [`parser.lavin`](dev/avinlang/parsing/parser.lavin): the rule, every combinator, and running a
    grammar.
 3. [`leaves.lavin`](dev/avinlang/parsing/leaves.lavin): the parsers that read text directly:
    characters, literals, names, numbers and strings.
+4. [`tokens.lavin`](dev/avinlang/parsing/tokens.lavin): reading a token stream: the reader of
+   tokens, the token leaves, and `TokenParsers`.
 
 ## Using it
 
@@ -259,6 +264,45 @@ The choices made, and why:
   look aheads drop the errors of a reading they go back from. Inside a look ahead and inside white
   space, a `recover` is only `p`.
 
+## Parsing tokens
+
+A language whose blocks are marked by indentation is easier to lex first and parse after: the lexer
+decides once where a block opens and closes, and emits `Indent`, `Dedent` and `Newline` tokens for
+the grammar to read. Such a grammar reads a `Tokens[E]` instead of text.
+
+A rule is a `Rule[-I: Reader, +T]`: what it reads, and what it yields. `Parser[T]` is
+`Rule[Input, T]`, a rule over text; a rule over tokens of type `E` is a `Rule[Tokens[E], T]`. The
+combinators take rules over any reader, and `success`, `failure` and `err`, which read nothing, are
+`Rule[Reader, T]`, so they join a rule over text or over tokens.
+
+| API | Meaning |
+| --- | --- |
+| `Tokens(items, describe, span, end)` | the tokens `items` as a reader: `describe(t)` shows a token in a message, `span(t)` is where it begins in the source, `end` where the source ends |
+| `token(t)` | the token `t` exactly, by `==`, expected as `describe(t)` |
+| `token(what, p)` | a token the predicate `p` accepts, expected as `what` |
+| `tokenMatch(what, f)` | what the `PartialFunction` `f` makes of a token it is defined at, expected as `what`: a token's payload |
+| `trait TokenParsers[E]` | a grammar of tokens: overrides `describe` and `span` (and `endOf`, the end of input after the tokens), and has the three leaves and `parse(p, items[, end])`, `parseAll(p, items[, end])` |
+| `parse(p, reader)`, `parseAll(p, reader)` | any rule over any reader |
+
+```avin
+object Blocks: TokenParsers[Tok]
+  override describe(t: Tok) -> string = t.shown
+  override span(t: Tok) -> Position = t.where
+  lazy val name: Rule[Tokens[Tok], string] = tokenMatch("name", match Name(n, _) -> n)
+  lazy val block: Rule[Tokens[Tok], List[string]] = token(Indent()) ~> rep1(name <~ token(Newline())) <~ token(Dedent())
+```
+
+Positions come from the tokens: a failure at a token is reported at `span` of it, the end of input
+at `end`, so ``2:5: expected `=`, found 1`` points at the source, never at an index in the stream.
+Messages, commit points, look aheads, `positioned` and `recover` work as they do on text; a
+`recover` that reads nothing skips one token. A token stream has no white space, so nothing is
+skipped between tokens.
+
+`token(t)` compares by `==`, so a token type that carries its place in the source gives the place a
+type whose values all compare equal, and a default: `token(Indent())` then reads an indent wherever
+it stands. `tokens.lavin` shows it, and [`tests/blocks.avin`](tests/blocks.avin) is a whole
+indentation language lexed and parsed this way.
+
 ## Recursive grammars
 
 Module-level rules are `lazy val`s, and they may refer to each other and to themselves in any
@@ -296,6 +340,39 @@ avin run . -- run samples/geometry.kite
 avin run . -- check samples/geometry.kite
 avin run . -- parse samples/geometry.kite
 ```
+
+## Changes since 0.6.0
+
+New: grammars of tokens, as *Parsing tokens* describes: `Rule[I, T]`, `Reader`, `Tokens`, `token`,
+`tokenMatch`, `TokenParsers`, and `parse` and `parseAll` over any reader. A grammar of text compiles
+as before, [Kite](examples/kite) unchanged, with these exceptions:
+
+| 0.6.0 | now |
+| --- | --- |
+| `Parser[T]` a class | `Parser[T]` a name for `Rule[Input, T]`; `Parser(run, name)` makes one as before |
+| `r.next()` and the input in `Success`, `Failure` and `Error` an `Input` | a `Reader`: `offset`, `pos()`, `atEnd()` and `describeAt(at)` are there, `first()` is an `Input`'s |
+| `input.recoverFrom(start, sync)` took a parser | it takes `() -> bool`, running the resynchronisation |
+
+## Design notes
+
+- A rule is `Rule[-I: Reader, +T]`, contravariant in what it reads, so a rule over any reader
+  (`success`, `failure`, `err`) is a rule over text and over tokens. A combinator joining two rules
+  is `[J: I]`: it reads what both read. **Review with the user:** the alternative, a separate
+  family of combinators for tokens, would have doubled the library.
+- `ParseResult.next()` answers a `Reader`, not an `Input`, so one result type serves both inputs;
+  a program that read `next().first()` now reads `next().describeAt(at)` or matches on the reader.
+  **Review with the user:** a `ParseResult[I, T]` keeping the reader's type would keep `first()`,
+  at the price of a second type argument in every signature that names a result.
+- A token's description and position are given to the reader, as `describe` and `span`, rather than
+  asked of the token through a trait it implements, so a lexer's token type needs nothing added to
+  it. **Review with the user:** a `Token` trait with `describe` and `span` would be shorter to set
+  up, but would tie every token type to the library.
+- `token(t)` reads by `==`. A token type that carries its source position makes the position's
+  type compare equal for every value, and defaults it, so a grammar writes `token(Indent())`.
+  **Review with the user:** the alternative, a `Tokens` holding positions beside the tokens
+  (`Vector[(E, Position)]`), keeps tokens free of positions but splits what the lexer makes in two.
+- The end of input after the last token defaults to that token's position, or `1:1` for an empty
+  stream; `TokenParsers.endOf` or an `end` argument places it exactly.
 
 ## Changes in 0.6.0
 

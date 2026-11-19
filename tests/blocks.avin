@@ -1,0 +1,140 @@
+module tests
+
+// Blocks: a small language whose blocks are marked by indentation, lexed into tokens and parsed
+// with the token leaves. A program is lines of statements: `name = number`, `print name`, and
+// `if name` followed by a block indented deeper, committed once its `if` is read.
+//
+//     a = 1
+//     if a
+//       print a
+//     b = 2
+import dev.avinlang.parsing.{ParseResult, Position, Rule, TokenParsers, Tokens, opt, recover, rep, rep1}
+
+// Where a token stands. Every `At` equals every other, so two tokens compare by what they are and
+// not by where, and the grammar's `token(Name("if"))` reads an `if` wherever it stands.
+class At(val pos: Position)
+
+impl Eq for At
+  equals(other: At) -> bool = true
+
+impl Hash for At
+  hash() -> long = 0
+
+// The place of a token written in a grammar rather than lexed: the start of the text.
+nowhere() -> At = At(Position(0, 1, 1))
+
+// A token at byte `offset` of the text, on `line` at `column`.
+placed(offset: int, line: int, column: int) -> At = At(Position(offset, line, column))
+
+// The tokens of Blocks.
+data Tok
+  Name(text: string, at: At = nowhere())
+  Num(value: long, at: At = nowhere())
+  Sym(text: string, at: At = nowhere())
+  Newline(at: At = nowhere())
+  Indent(at: At = nowhere())
+  Dedent(at: At = nowhere())
+
+impl Tok
+  // Where the token begins in the text.
+  where -> Position = self match
+    Name(_, a) -> a.pos
+    Num(_, a) -> a.pos
+    Sym(_, a) -> a.pos
+    Newline(a) -> a.pos
+    Indent(a) -> a.pos
+    Dedent(a) -> a.pos
+
+  // The token as a message shows it.
+  shown -> string = self match
+    Name(t, _) -> s"`$t`"
+    Num(v, _) -> s"$v"
+    Sym(t, _) -> s"`$t`"
+    Newline(_) -> "end of line"
+    Indent(_) -> "indent"
+    Dedent(_) -> "dedent"
+
+// A token shows as a message shows it.
+impl Display for Tok
+  display(out: Writer, spec: FormatSpec) = out.write(shown)
+
+// The tokens of `text`. A line indented deeper than the block it is in opens a block with an
+// `Indent` where its first token is; a line indented less closes each block it leaves with a
+// `Dedent` there. Then come its names, numbers and symbols, and a `Newline` where it ends. Blank
+// lines make no tokens, and every block still open at the end is closed where the last line ends.
+lex(text: string) -> Vector[Tok]
+  val out = Buffer[Tok]()
+  var levels = List(0)
+  var offset = 0
+  var line = 1
+  var last = placed(0, 1, 1)
+  for row in text.split('\n')
+    var i = 0
+    while i < row.byteLength && row.charAt(i) == ' '
+      i += 1
+    if i < row.byteLength
+      if i > levels.head
+        out.append(Indent(placed(offset + i, line, i + 1)))
+        levels = i :: levels
+      while i < levels.head
+        levels = levels.tail
+        out.append(Dedent(placed(offset + i, line, i + 1)))
+      while i < row.byteLength
+        val start = i
+        val c = row.charAt(i)
+        val here = placed(offset + start, line, start + 1)
+        if c == ' '
+          i += 1
+        else if c.isLetter
+          while i < row.byteLength && row.charAt(i).isLetterOrDigit
+            i += 1
+          out.append(Name(row.slice(start, i), here))
+        else if c.isDigit
+          while i < row.byteLength && row.charAt(i).isDigit
+            i += 1
+          out.append(Num(row.slice(start, i).toLongOption().getOrElse(0), here))
+        else
+          i += 1
+          out.append(Sym(row.slice(start, i), here))
+      last = placed(offset + i, line, i + 1)
+      out.append(Newline(last))
+    offset += row.byteLength + 1
+    line += 1
+  while levels.head > 0
+    levels = levels.tail
+    out.append(Dedent(last))
+  out.toVector
+
+// Where `text` ends: its length, on its last line, one column past that line's last character.
+endOfText(text: string) -> Position
+  val lines = text.split('\n')
+  Position(text.byteLength, lines.length, lines(lines.length - 1).byteLength + 1)
+
+// The grammar of Blocks. Each statement answers itself as text, a block as its statements in
+// braces.
+object Blocks: TokenParsers[Tok]
+  override describe(t: Tok) -> string = t.shown
+  override span(t: Tok) -> Position = t.where
+
+  lazy val name: Rule[Tokens[Tok], string] = tokenMatch("name", match Name(n, _) -> n)
+  lazy val number: Rule[Tokens[Tok], long] = tokenMatch("number", match Num(v, _) -> v)
+  lazy val symbol: Rule[Tokens[Tok], Tok] = token("symbol", t -> t is Sym(_, _))
+  lazy val newline: Rule[Tokens[Tok], Tok] = token(Newline())
+
+  lazy val assign: Rule[Tokens[Tok], string] = name ~ (token(Sym("=")) ~> number) <~ newline ^^ (match (n, v) -> s"$n = $v")
+  lazy val printStmt: Rule[Tokens[Tok], string] = token(Name("print")) ~> name <~ newline ^^ (n -> s"print $n")
+  lazy val ifStmt: Rule[Tokens[Tok], string] = token(Name("if")) ~! (name ~ (newline ~> block)) ^^ (match (_, (c, b)) -> s"if $c $b")
+  lazy val block: Rule[Tokens[Tok], string] = token(Indent()) ~> rep1(stmt) <~ token(Dedent()) ^^ (ss -> s"{${ss.mkString("; ")}}")
+  lazy val stmt: Rule[Tokens[Tok], string] = ifStmt | printStmt | assign
+  lazy val program: Rule[Tokens[Tok], List[string]] = rep(stmt)
+
+  // Everything up to and including the end of the line, or to the end of the tokens.
+  lazy val restOfLine: Rule[Tokens[Tok], unit] = rep(token("anything", t -> !(t is Newline(_)))) ~ opt(newline) ^^^ ()
+
+  // A statement that recovers at the end of its line, standing as its error's position in angle
+  // brackets.
+  lazy val line: Rule[Tokens[Tok], string] = recover(stmt, restOfLine, (msg, at) -> s"<$at>")
+  lazy val lines: Rule[Tokens[Tok], List[string]] = rep(line)
+
+// `Blocks.parseAll(p, …)` of the tokens of `text`, the end of input where the text ends.
+parseText[T](p: Rule[Tokens[Tok], T], text: string) -> ParseResult[T] = Blocks.parseAll(p, lex(text), endOfText(text))
