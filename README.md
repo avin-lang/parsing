@@ -341,18 +341,6 @@ avin run . -- check samples/geometry.kite
 avin run . -- parse samples/geometry.kite
 ```
 
-## Changes since 0.6.0
-
-New: grammars of tokens, as *Parsing tokens* describes: `Rule[I, T]`, `Reader`, `Tokens`, `token`,
-`tokenMatch`, `TokenParsers`, and `parse` and `parseAll` over any reader. A grammar of text compiles
-as before, [Kite](examples/kite) unchanged, with these exceptions:
-
-| 0.6.0 | now |
-| --- | --- |
-| `Parser[T]` a class | `Parser[T]` a name for `Rule[Input, T]`; `Parser(run, name)` makes one as before |
-| `r.next()` and the input in `Success`, `Failure` and `Error` an `Input` | a `Reader`: `offset`, `pos()`, `atEnd()` and `describeAt(at)` are there, `first()` is an `Input`'s |
-| `input.recoverFrom(start, sync)` took a parser | it takes `() -> bool`, running the resynchronisation |
-
 ## Design notes
 
 - A rule is `Rule[-I: Reader, +T]`, contravariant in what it reads, so a rule over any reader
@@ -387,6 +375,15 @@ describes. A grammar that does not recover reads as before, with two exceptions:
 
 [Kite](examples/kite) now reports every syntax error in a file, and its unclosed comment is an
 error of its white space.
+
+New: grammars of tokens, as *Parsing tokens* describes: `Rule[I, T]`, `Reader`, `Tokens`, `token`,
+`tokenMatch`, `TokenParsers`, and `parse` and `parseAll` over any reader. A grammar of text compiles
+as before, Kite unchanged, with these exceptions:
+
+| 0.5.1 | 0.6.0 |
+| --- | --- |
+| `Parser[T]` a class | `Parser[T]` a name for `Rule[Input, T]`; `Parser(run, name)` makes one as before |
+| `r.next()` and the input in `Success`, `Failure` and `Error` an `Input` | a `Reader`: `offset`, `pos()`, `atEnd()` and `describeAt(at)` are there, `first()` is an `Input`'s |
 
 ## Changes in 0.5.1
 
