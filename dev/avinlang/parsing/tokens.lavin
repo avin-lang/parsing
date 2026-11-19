@@ -1,0 +1,176 @@
+# Token streams
+
+Some languages are easier to lex first and parse after. A language whose blocks are marked by
+indentation is the usual case: whether a line opens a block, continues one or closes several is a
+question about the lines around it, which a lexer answers once, by emitting `Indent`, `Dedent` and
+`Newline` tokens, and which a grammar of characters would answer again at every rule. String
+interpolation and templates are others: the lexer splits the text into pieces, and the grammar
+reads the pieces.
+
+This file is how such a grammar is written. The combinators are the same ones a grammar of text
+uses, since every one is written against a `Reader`; only the leaves differ. A grammar of tokens
+reads a `Tokens` and its leaves read one token each.
+
+    module dev.avinlang.parsing
+
+## The reader of tokens
+
+A `Tokens` is a `Reader` whose elements are tokens of some type `E`, usually a `data` type with a
+case per kind of token. Its offset counts tokens. Two things about a token are the grammar's to
+say, since the library cannot know them, and the `Tokens` is given both:
+
+- **how a token shows in a message**, `describe`: what is found where a parse fails, and what an
+  exact token leaf expects, so ``expected `then`, found end of line`` reads as the language does;
+- **where it is**, `span`: the position in the source where the token begins, which is where an
+  error at the token is reported and the position `positioned` gives a value. A message points at
+  the source, never at the token's index in the stream.
+
+And one position more, `end`: where the end of input is, for a failure after the last token.
+
+    // A sequence of tokens a parser reads: the reader whose offset is an index into `items`. Each token
+    // shows in a message as `describe` says, and is at `span` in the source; the end of input is at
+    // `end`.
+    class Tokens[E](val items: Vector[E], val describe: E -> string, val span: E -> Position, val end: Position): Reader()
+        // How many tokens there are.
+        override length -> int = items.length
+
+        // The token at `offset`, which traps at the end.
+        first() -> E = items(offset)
+
+        // Where the token at `at` begins in the source, or `end` at the end.
+        override position(at: int) -> Position = if at < items.length then span(items(at)) else end
+
+        // The token at `at`, as `describe` shows it.
+        override describeAt(at: int) -> string = describe(items(at))
+
+        // Moves past the token at `offset`.
+        override skipOne() = offset += 1
+
+A token stream has no white space: its lexer dropped it, or made tokens of what matters, as an
+indentation lexer does of line breaks. So a `Tokens` skips nothing, and `phrase`, `positioned` and
+`withFailureMessage` read exactly from where they are.
+
+## Reading a token
+
+A grammar of tokens is built from three leaves.
+
+- `token(t)` reads the token `t` exactly: `token(Then)`, `token(Indent)`. It expects `t` as the
+  reader describes it.
+- `token(what, p)` reads any token `p` accepts: `token("number", t -> t is Number(_))`. It expects
+  `what`.
+- `tokenMatch(what, f)` reads a token `f` is defined at and yields what `f` makes of it, which is
+  how the payload of a token is taken out: `tokenMatch("name", match Ident(n) -> n)` reads an
+  `Ident` and yields its name. It expects `what`.
+
+Each fails where it stands, at the end of input too, having recorded what it expected. Like
+`literal`, `token(t)` notes what it read, so a `not` just after it that refuses what follows names
+the token as expected.
+
+The leaves need to know the token type. Given a token, as `token(Indent)` is, it is found from it;
+a predicate or a `match` says nothing about its argument's type, so `token` and `tokenMatch`
+called with one are written inside a grammar that names the type, a `TokenParsers[Tok]` below, or
+given it: `tokenMatch[Tok, string]("name", match Ident(n) -> n)`.
+
+    // The token `t`, expected as the reader describes it.
+    token[E: Sendable](t: E) -> Rule[Tokens[E], E] = exactToken(t)
+
+    // A token `p` accepts, expected as `what`.
+    token[E: Sendable](what: string, @sendable p: E -> bool) -> Rule[Tokens[E], E] = tokenWhere(what, p)
+
+    // What `f` makes of a token it is defined at, expected as `what`.
+    tokenMatch[E, U](what: string, @sendable f: PartialFunction[E, U]) -> Rule[Tokens[E], U] = matchToken(what, f)
+
+The work is done by three private functions, so that a `TokenParsers` grammar's methods of the same
+names can call them.
+
+    // The token `t`, expected as the reader describes it.
+    private exactToken[E: Sendable](t: E) -> Rule[Tokens[E], E] = Rule(input ->
+        val start = input.offset
+        if !input.atEnd() && input.first() == t
+            input.offset += 1
+            input.readToken(start, input.describe(t))
+            Some(t)
+        else input.fail(input.describe(t)))
+
+    // A token `p` accepts, expected as `what`.
+    private tokenWhere[E: Sendable](what: string, @sendable p: E -> bool) -> Rule[Tokens[E], E] = Rule(input ->
+        if input.atEnd() then return input.fail(what)
+        val t = input.first()
+        if !p(t) then return input.fail(what)
+        input.offset += 1
+        Some(t))
+
+    // What `f` makes of a token it is defined at, expected as `what`.
+    private matchToken[E, U](what: string, @sendable f: PartialFunction[E, U]) -> Rule[Tokens[E], U] = Rule(input ->
+        if input.atEnd() then return input.fail(what)
+        f.lift()(input.first()) match
+            Some(u) ->
+                input.offset += 1
+                Some(u)
+            None -> input.fail(what))
+
+## A grammar of tokens
+
+A grammar of tokens is an object conforming to `TokenParsers[Tok]`, as a grammar of text with white
+space of its own conforms to `RegexParsers`. It says how a token shows and where it is, once, and in
+return its leaves know the token type and its `parse` and `parseAll` take the lexer's tokens as they
+come:
+
+```avin
+data Tok
+    Indent
+    Dedent
+    Ident(name: string, at: Position)
+    ...
+
+object Blocks: TokenParsers[Tok]
+    override describe(t: Tok) -> string = show(t)
+    override span(t: Tok) -> Position = where(t)
+
+    lazy val name: Rule[Tokens[Tok], string] = tokenMatch("name", match Ident(n, _) -> n)
+    lazy val block: Rule[Tokens[Tok], List[string]] = token(Indent) ~> rep1(name) <~ token(Dedent)
+
+Blocks.parseAll(Blocks.block, lex(text))
+```
+
+The end of input is placed at the last token, or at `1:1` for a stream with none; a grammar whose
+lexer knows where the text ends overrides `endOf`, or passes the end to `parse`.
+
+    // A grammar of tokens of type `E`: how a token shows and where it is, the leaves that read one,
+    // and how a sequence of tokens is parsed.
+    trait TokenParsers[E: Sendable]
+        // How `t` shows in a message.
+        describe(t: E) -> string
+
+        // Where `t` begins in the source.
+        span(t: E) -> Position
+
+        // Where the end of input is, after `items`: the last token's position, or `1:1` when there is
+        // none.
+        endOf(items: Vector[E]) -> Position = items.lastOption.map(t -> span(t)).getOrElse(Position(0, 1, 1))
+
+        // `items` as a reader, ending at `end`.
+        tokens(items: Vector[E], end: Position) -> Tokens[E] = Tokens(items, t -> describe(t), t -> span(t), end)
+
+        // The token `t`, expected as `describe` shows it.
+        token(t: E) -> Rule[Tokens[E], E] = exactToken(t)
+
+        // A token `p` accepts, expected as `what`.
+        token(what: string, @sendable p: E -> bool) -> Rule[Tokens[E], E] = tokenWhere(what, p)
+
+        // What `f` makes of a token it is defined at, expected as `what`.
+        tokenMatch[U](what: string, @sendable f: PartialFunction[E, U]) -> Rule[Tokens[E], U] = matchToken(what, f)
+
+        // The value of the longest beginning of `items` that `p` reads, the end of input at `end`.
+        parse[T](p: Rule[Tokens[E], T], items: Vector[E], end: Position) -> ParseResult[T]
+            val input = tokens(items, end)
+            input.result(p.run(input))
+
+        // The value of the longest beginning of `items` that `p` reads.
+        parse[T](p: Rule[Tokens[E], T], items: Vector[E]) -> ParseResult[T] = parse(p, items, endOf(items))
+
+        // The value of the whole of `items`, the end of input at `end`.
+        parseAll[T](p: Rule[Tokens[E], T], items: Vector[E], end: Position) -> ParseResult[T] = parse(phrase(p), items, end)
+
+        // The value of the whole of `items`.
+        parseAll[T](p: Rule[Tokens[E], T], items: Vector[E]) -> ParseResult[T] = parse(phrase(p), items, endOf(items))

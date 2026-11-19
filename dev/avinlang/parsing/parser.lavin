@@ -17,19 +17,36 @@ parsers that read text directly, characters, literals, names, numbers and string
 
 ## What a parser is
 
-A parser is a function from an `Input` to an `Option`. It answers `Some(value)` having moved the
-input's offset past what it read, or `None` having recorded at the input what it expected. That is
+A parser is a function from a reader to an `Option`. It answers `Some(value)` having moved the
+reader's offset past what it read, or `None` having recorded at the reader what it expected. That is
 the whole contract, and anything that keeps it is a parser: the library's own combinators are
 written exactly as a user's custom parser would be.
 
-`Parser` is a class rather than a bare function type so that the combinators can be its methods,
-and so that `p | q` can be written as an operator. It is covariant: a `Parser[Dog]` is a
-`Parser[Animal]`. A parser may have a name, given by `named`, which is how it shows.
+A `Rule[I, T]` is such a function over a reader `I`, yielding a `T`. It is a class rather than a
+bare function type so that the combinators can be its methods, and so that `p | q` can be written
+as an operator. A rule may have a name, given by `named`, which is how it shows.
 
-    // A parser of a `T`. `run` reads from the input's offset; a custom parser is made by giving one.
-    class Parser[+T](val run: @sendable Input -> Option[T], val name: string = "")
+It varies with both of its types. It is covariant in `T`: a rule of `Dog`s is a rule of `Animal`s.
+It is contravariant in `I`: a rule that can read any `Reader` can read an `Input`, so it is a rule
+over `Input` too. That is what lets the rules that read nothing, `success`, `failure` and `err`,
+be written once, over `Reader`, and join a grammar of text and a grammar of tokens alike.
 
-    impl[T] Display for Parser[T]
+Text is what most grammars read, so a rule over `Input` has its own name: a `Parser[T]` is a
+`Rule[Input, T]`, and `Parser(input -> …)` makes one. A grammar of text never names `Rule`. A
+grammar of tokens names its rules `Rule[Tokens[Tok], T]`, or an alias of its own, as
+`tokens.lavin` shows.
+
+    // A rule reading an `I`, yielding a `T`. `run` reads from the reader's offset; a custom rule is
+    // made by giving one.
+    class Rule[-I: Reader, +T](val run: @sendable I -> Option[T], val name: string = "")
+
+    // A rule reading text.
+    type Parser[T] = Rule[Input, T]
+
+    // A rule reading text, made from the function that runs it.
+    Parser[T](run: @sendable Input -> Option[T], name: string = "") -> Parser[T] = Rule(run, name)
+
+    impl[I: Reader, T] Display for Rule[I, T]
         display(out: Writer, spec: FormatSpec) = out.write(s"Parser ($name)")
 
 ## Sequence
@@ -57,11 +74,15 @@ any case, so a grammar never needs to.
 `p ~ q` runs `p`, then `q` where `p` stopped, and pairs their values. If either fails the pair
 fails, and the failing parser has already recorded what it expected.
 
-    impl[T] Parser[T]
+Every combinator that joins two rules reads what both read. Each takes the other rule over a reader
+`J` that is the receiver's `I` or more particular, and makes a rule over `J`: `p ~ err(msg)`, with
+`p` a `Parser`, reads text, and so does `success(0) | p`, the receiver there reading any reader.
+
+    impl[I: Reader, T] Rule[I, T]
         // This parser, then `next`: both values.
-        ~[U](@sendable next: -> Parser[U]) -> Parser[(T, U)]
+        ~[J: I, U](@sendable next: -> Rule[J, U]) -> Rule[J, (T, U)]
             val q = later(next)
-            Parser(input ->
+            Rule(input ->
                 run(input) match
                     Some(a) -> q.run(input) match
                         Some(b) -> Some((a, b))
@@ -73,17 +94,17 @@ after a key. The arrow points at the side that is kept: `p ~> q` keeps `q`'s val
 keeps `p`'s, so `literal("[") ~> items <~ literal("]")` is the items alone.
 
         // This parser, then `next`, whose value is kept.
-        ~>[U](@sendable next: -> Parser[U]) -> Parser[U]
+        ~>[J: I, U](@sendable next: -> Rule[J, U]) -> Rule[J, U]
             val q = later(next)
-            Parser(input ->
+            Rule(input ->
                 run(input) match
                     Some(_) -> q.run(input)
                     None -> None)
 
         // This parser, then `next`, whose value is dropped.
-        <~[U](@sendable next: -> Parser[U]) -> Parser[T]
+        <~[J: I, U](@sendable next: -> Rule[J, U]) -> Rule[J, T]
             val q = later(next)
-            Parser(input ->
+            Rule(input ->
                 run(input) match
                     Some(a) -> q.run(input) match
                         Some(_) -> Some(a)
@@ -98,9 +119,9 @@ name `let` wanted, rather than as whatever the next kind of statement would have
 
         // This parser, then `next`, committed: once this parser has succeeded, a failure of `next` fails
         // the whole parse instead of letting an alternative be tried.
-        ~![U](@sendable next: -> Parser[U]) -> Parser[(T, U)]
+        ~![J: I, U](@sendable next: -> Rule[J, U]) -> Rule[J, (T, U)]
             val q = later(next)
-            Parser(input ->
+            Rule(input ->
                 run(input) match
                     Some(a) -> q.run(input) match
                         Some(b) -> Some((a, b))
@@ -116,9 +137,9 @@ Backtracking is a single assignment, since the offset is the only thing a parser
 committed failure is not retried.
 
         // This parser, or `other` from the same place when this one fails before a commit point.
-        |(@sendable other: -> Parser[T]) -> Parser[T]
+        |[J: I](@sendable other: -> Rule[J, T]) -> Rule[J, T]
             val q = later(other)
-            Parser(input ->
+            Rule(input ->
                 val start = input.offset
                 val mark = input.errorCount()
                 run(input) match
@@ -136,9 +157,9 @@ one, and where both fail the parse fails with what both expected.
 
         // This parser or `other`, from the same place, whichever reads further; this one when both read
         // as far.
-        |||(@sendable other: -> Parser[T]) -> Parser[T]
+        |||[J: I](@sendable other: -> Rule[J, T]) -> Rule[J, T]
             val q = later(other)
-            Parser(input ->
+            Rule(input ->
                 val start = input.offset
                 val mark = input.errorCount()
                 val a = run(input)
@@ -166,16 +187,16 @@ name and evaluated at each success, so an operator's function, `literal("+") ^^^
 is made where the parser runs rather than kept and shared by every thread that runs it.
 
         // The value given to `f`.
-        ^^[U](@sendable f: T ->U) -> Parser[U] = map(f)
+        ^^[U](@sendable f: T ->U) -> Rule[I, U] = map(f)
 
         // The value given to `f`.
-        map[U](@sendable f: T ->U) -> Parser[U] = Parser(input ->
+        map[U](@sendable f: T ->U) -> Rule[I, U] = Rule(input ->
             run(input) match
                 Some(a) -> Some(f(a))
                 None -> None)
 
         // `value` in place of what was read, evaluated at each success.
-        ^^^[U](@sendable value: -> U) -> Parser[U] = Parser(input ->
+        ^^^[U](@sendable value: -> U) -> Rule[I, U] = Rule(input ->
             run(input) match
                 Some(_) -> Some(value)
                 None -> None)
@@ -189,12 +210,12 @@ With two arguments it is called with a dot: `p.^?(f, n -> s"$n is out of range")
 
         // The value given to `f`, where `f` is defined at it; a failure where this parser started,
         // expecting `value the function is defined at`, elsewhere.
-        ^?[U](@sendable f: PartialFunction[T, U]) -> Parser[U] = self.^?(f, a -> "value the function is defined at")
+        ^?[U](@sendable f: PartialFunction[T, U]) -> Rule[I, U] = self.^?(f, a -> "value the function is defined at")
 
         // The value given to `f`, where `f` is defined at it; a failure where this parser started,
         // expecting `error` of the value, elsewhere.
-        ^?[U](@sendable f: PartialFunction[T, U], @sendable error: T -> string) -> Parser[U]
-            Parser(input ->
+        ^?[U](@sendable f: PartialFunction[T, U], @sendable error: T -> string) -> Rule[I, U]
+            Rule(input ->
                 val start = input.offset
                 run(input) match
                     Some(a) -> f.lift()(a) match
@@ -208,16 +229,16 @@ reads best with: `ident into (open -> ... literal(open))`, or `ident >> (open ->
 `>>` binds at the precedence of a shift, looser than `~` and `^^`.
 
         // The parser `f` makes of the value, run where this one stopped.
-        flatMap[U](@sendable f: T ->Parser[U]) -> Parser[U] = Parser(input ->
+        flatMap[J: I, U](@sendable f: T -> Rule[J, U]) -> Rule[J, U] = Rule(input ->
             run(input) match
                 Some(a) -> f(a).run(input)
                 None -> None)
 
         // `flatMap(f)`.
-        into[U](@sendable f: T ->Parser[U]) -> Parser[U] = flatMap(f)
+        into[J: I, U](@sendable f: T -> Rule[J, U]) -> Rule[J, U] = flatMap(f)
 
         // `flatMap(f)`.
-        >>[U](@sendable f: T ->Parser[U]) -> Parser[U] = flatMap(f)
+        >>[J: I, U](@sendable f: T -> Rule[J, U]) -> Rule[J, U] = flatMap(f)
 
 `filter` refuses a value the grammar can read but does not accept: a name that is a keyword, a
 number out of range. The refusal is reported where the value began, since that is where the text
@@ -228,7 +249,7 @@ went wrong, and the input is moved back there so an alternative can try the same
 
         // The value when `p` accepts it; otherwise a failure where this parser started, expecting `value
         // the filter accepts`.
-        filter(@sendable p: T -> bool) -> Parser[T] = Parser(input ->
+        filter(@sendable p: T -> bool) -> Rule[I, T] = Rule(input ->
             val start = input.offset
             run(input) match
                 Some(a) if p(a) -> Some(a)
@@ -236,7 +257,7 @@ went wrong, and the input is moved back there so an alternative can try the same
                 None -> None)
 
         // `filter(p)`.
-        withFilter(@sendable p: T -> bool) -> Parser[T] = filter(p)
+        withFilter(@sendable p: T -> bool) -> Rule[I, T] = filter(p)
 
 ## Names and messages
 
@@ -244,7 +265,7 @@ went wrong, and the input is moved back there so an alternative can try the same
 what is parsed or reported.
 
         // This parser, showing as `Parser (n)`.
-        named(n: string) -> Parser[T] = Parser(run, n)
+        named(n: string) -> Rule[I, T] = Rule(run, n)
 
 `withFailureMessage` replaces what a failure says, as `input.lavin` explains: a rule that fails
 without getting past its first character is reported as expecting `msg`, in place of everything its
@@ -257,7 +278,7 @@ such a failure is final.
 
         // This parser, reported as expecting `msg` when it fails without getting past its first
         // character, in place of the expectations of the parsers it is made of.
-        withFailureMessage(msg: string) -> Parser[T] = Parser(input ->
+        withFailureMessage(msg: string) -> Rule[I, T] = Rule(input ->
             val start = input.offset
             if !input.handleWhiteSpace() then return None
             val token = input.offset
@@ -271,7 +292,7 @@ such a failure is final.
             r)
 
         // This parser, reported as expecting `msg` when it fails past a commit point.
-        withErrorMessage(msg: string) -> Parser[T] = Parser(input ->
+        withErrorMessage(msg: string) -> Rule[I, T] = Rule(input ->
             val r = run(input)
             if r is None && input.committed then input.reword(msg)
             r)
@@ -282,7 +303,7 @@ the parser started.
 
     // Fails, expecting `what` where the value read from `start` began, after the grammar's white space,
     // with the input back at `start`.
-    private refuse[T](input: Input, start: int, what: string) -> Option[T]
+    private refuse[T](input: Reader, start: int, what: string) -> Option[T]
         input.offset = start
         if !input.handleWhiteSpace() then return None
         input.expect(what)
@@ -301,26 +322,26 @@ is `repeated`, below, shared by `rep` and `rep1`.
     // The values of `p` run as many times as it succeeds, none included. A run that reads nothing
     // ends the repetition without adding its value, so a parser that can succeed on nothing does not
     // loop.
-    rep[T](@sendable p: -> Parser[T]) -> Parser[List[T]]
+    rep[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, List[T]]
         val q = later(p)
-        Parser(input -> repeated(q, input, Buffer[T]()))
+        Rule(input -> repeated(q, input, Buffer[T]()))
 
     // As `rep`, at least once.
-    rep1[T](@sendable p: -> Parser[T]) -> Parser[List[T]]
+    rep1[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, List[T]]
         val q = later(p)
-        Parser(input -> atLeastOnce(q, q, input))
+        Rule(input -> atLeastOnce(q, q, input))
 
 `rep1(first, p)` reads one `first`, then `p` as many times as it succeeds: a name whose first
 character is a letter and whose others may be digits too.
 
     // One `first`, then the values of `p` as many times as it succeeds.
-    rep1[T](@sendable first: -> Parser[T], @sendable p: -> Parser[T]) -> Parser[List[T]]
+    rep1[I: Reader, T](@sendable first: -> Rule[I, T], @sendable p: -> Rule[I, T]) -> Rule[I, List[T]]
         val f = later(first)
         val q = later(p)
-        Parser(input -> atLeastOnce(f, q, input))
+        Rule(input -> atLeastOnce(f, q, input))
 
     // One `first`, then `p` as many times as it succeeds.
-    private atLeastOnce[T](first: Parser[T], p: Parser[T], input: Input) -> Option[List[T]]
+    private atLeastOnce[I: Reader, T](first: Rule[I, T], p: Rule[I, T], input: I) -> Option[List[T]]
         val items = Buffer[T]()
         items.addOne(first.run(input)?)
         repeated(p, input, items)
@@ -329,9 +350,9 @@ character is a letter and whose others may be digits too.
 of an escape. It fails if `p` fails before the `n`th, and reads nothing after it.
 
     // Exactly `num` values of `p`.
-    repN[T](num: int, @sendable p: -> Parser[T]) -> Parser[List[T]]
+    repN[I: Reader, T](num: int, @sendable p: -> Rule[I, T]) -> Rule[I, List[T]]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             val items = Buffer[T]()
             for _ in 0..<num
                 items.addOne(q.run(input)?)
@@ -343,10 +364,10 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
 
     // The values of `p` separated by `q`, none included. A separator must be followed by a value,
     // and a separator and value that together read nothing end the repetition.
-    repsep[T, S](@sendable p: -> Parser[T], @sendable q: -> Parser[S]) -> Parser[List[T]]
+    repsep[I: Reader, T, S](@sendable p: -> Rule[I, T], @sendable q: -> Rule[I, S]) -> Rule[I, List[T]]
         val v = later(p)
         val s = later(q)
-        Parser(input ->
+        Rule(input ->
             val start = input.offset
             val mark = input.errorCount()
             v.run(input) match
@@ -358,10 +379,10 @@ of an escape. It fails if `p` fails before the `n`th, and reads nothing after it
                     Some(List.empty[T]()))
 
     // As `repsep`, at least one value.
-    rep1sep[T, S](@sendable p: -> Parser[T], @sendable q: -> Parser[S]) -> Parser[List[T]]
+    rep1sep[I: Reader, T, S](@sendable p: -> Rule[I, T], @sendable q: -> Rule[I, S]) -> Rule[I, List[T]]
         val v = later(p)
         val s = later(q)
-        Parser(input -> v.run(input).flatMap(a -> separated(v, s, input, a)))
+        Rule(input -> v.run(input).flatMap(a -> separated(v, s, input, a)))
 
 Both loops have the same shape: remember where the next run starts, run, and on failure go back
 there and stop. They stop also when a run read nothing. A committed failure is not a stop but a
@@ -369,7 +390,7 @@ failure of the whole repetition. A run that is not kept, because it failed or re
 any error it recovered from with it, as `recover` below explains.
 
     // `p` run as many times as it succeeds, added to `items`.
-    private repeated[T](p: Parser[T], input: Input, items: Buffer[T]) -> Option[List[T]]
+    private repeated[I: Reader, T](p: Rule[I, T], input: I, items: Buffer[T]) -> Option[List[T]]
         loop
             val start = input.offset
             val mark = input.errorCount()
@@ -391,7 +412,7 @@ the list where it began; a value that fails after a separator fails the list, wh
 a trailing separator an error. `?` returns the `None` at once.
 
     // `first`, then the values of `p` after each `sep`.
-    private separated[T, S](p: Parser[T], sep: Parser[S], input: Input, first: T) -> Option[List[T]]
+    private separated[I: Reader, T, S](p: Rule[I, T], sep: Rule[I, S], input: I, first: T) -> Option[List[T]]
         val items = Buffer[T]()
         items.addOne(first)
         loop
@@ -415,9 +436,9 @@ a trailing separator an error. `?` returns the `None` at once.
 nothing, when it does not.
 
     // `Some` of the value of `p`, or `None` without reading anything when `p` fails.
-    opt[T](@sendable p: -> Parser[T]) -> Parser[Option[T]]
+    opt[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, Option[T]]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             val start = input.offset
             val mark = input.errorCount()
             q.run(input) match
@@ -432,9 +453,9 @@ nothing, when it does not.
 answers an `Error` naming what `p` expected.
 
     // `p`, whose failure fails the whole parse.
-    commit[T](@sendable p: -> Parser[T]) -> Parser[T]
+    commit[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, T]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             val r = q.run(input)
             if r is None then input.committed = true
             r)
@@ -468,6 +489,7 @@ always did, so a grammar that never recovers reads the same.
 Three rules keep recovery from looping or lying.
 
 - **It always moves on.** A `recover` whose `p` and `sync` together read nothing skips one character,
+  or one token of a token stream,
   so a repetition of recoveries cannot stay in one place. The skip is taken only then: a `sync` that
   stops in front of a closing `}`, having been given text to read before it, leaves the `}` for the
   block. And a `recover` that fails again at the place of the error before it reports one error,
@@ -488,17 +510,17 @@ keeps, so neither has anything to recover.
     // was expected and the commit are cleared, and the value is `onError` of the message and the
     // position. Where `p` and `sync` read nothing, one character is skipped; where `sync` fails, the
     // `recover` fails as `p` did.
-    recover[T, U](@sendable p: -> Parser[T], @sendable sync: -> Parser[U], @sendable onError: (string, Position) -> T) -> Parser[T]
+    recover[I: Reader, T, U](@sendable p: -> Rule[I, T], @sendable sync: -> Rule[I, U], @sendable onError: (string, Position) -> T) -> Rule[I, T]
         val q = later(p)
         val s = later(sync)
-        Parser(input ->
+        Rule(input ->
             val start = input.offset
             val r = q.run(input)
             if r is Some(_) || input.lookingAhead > 0 || input.skippingWhiteSpace() then return r
-            val e = input.recoverFrom(start, s)?
+            val e = input.recoverFrom(start, () -> s.run(input) is Some(_))?
             if input.offset <= start
                 input.offset = start
-                if !input.atEnd() then input.offset += width(input.first())
+                if !input.atEnd() then input.skipOne()
             Some(onError(e.msg, e.pos)))
 
 ## Positions
@@ -537,9 +559,9 @@ white space first, so the position is the value's own and not that of the space 
 
     // The value of `p`, positioned where `p` starts after any white space, unless it already has a
     // position.
-    positioned[T: Positional](@sendable p: -> Parser[T]) -> Parser[T]
+    positioned[I: Reader, T: Positional](@sendable p: -> Rule[I, T]) -> Rule[I, T]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             if !input.handleWhiteSpace() then return None
             val start = input.offset
             q.run(input) match
@@ -562,21 +584,21 @@ followed by any number of arguments lists, a value followed by `.field` selectio
 
     // One `p` or more separated by `q`, combined from the left by the functions `q` yields:
     // `1 - 2 - 3` is `(1 - 2) - 3`.
-    chainl1[T](@sendable p: -> Parser[T], @sendable q: -> Parser[(T, T) -> T]) -> Parser[T]
+    chainl1[I: Reader, T](@sendable p: -> Rule[I, T], @sendable q: -> Rule[I, (T, T) -> T]) -> Rule[I, T]
         val v = later(p)
         val o = later(q)
-        Parser(input -> leftFolded(v, v, o, input))
+        Rule(input -> leftFolded(v, v, o, input))
 
     // One `first`, then any number of `p` each after a `q`, combined from the left by the functions
     // `q` yields.
-    chainl1[T, U](@sendable first: -> Parser[T], @sendable p: -> Parser[U], @sendable q: -> Parser[(T, U) -> T]) -> Parser[T]
+    chainl1[I: Reader, T, U](@sendable first: -> Rule[I, T], @sendable p: -> Rule[I, U], @sendable q: -> Rule[I, (T, U) -> T]) -> Rule[I, T]
         val f = later(first)
         val v = later(p)
         val o = later(q)
-        Parser(input -> leftFolded(f, v, o, input))
+        Rule(input -> leftFolded(f, v, o, input))
 
     // `first`, then `p` after each `q`, folded from the left.
-    private leftFolded[T, U](first: Parser[T], p: Parser[U], q: Parser[(T, U) -> T], input: Input) -> Option[T]
+    private leftFolded[I: Reader, T, U](first: Rule[I, T], p: Rule[I, U], q: Rule[I, (T, U) -> T], input: I) -> Option[T]
         var acc = first.run(input)?
         loop
             val start = input.offset
@@ -604,10 +626,10 @@ stack.
 
     // One `p` or more separated by `q`, folded from the right into `first` by the functions `q`
     // yields, the first value joined to the fold by `combine`.
-    chainr1[T, U: Sendable](@sendable p: -> Parser[T], @sendable q: -> Parser[(T, U) -> U], @sendable combine: (T, U) -> U, first: U) -> Parser[U]
+    chainr1[I: Reader, T, U: Sendable](@sendable p: -> Rule[I, T], @sendable q: -> Rule[I, (T, U) -> U], @sendable combine: (T, U) -> U, first: U) -> Rule[I, U]
         val v = later(p)
         val o = later(q)
-        Parser(input ->
+        Rule(input ->
             val values = Buffer[T]()
             val fs = Buffer[(T, U) -> U]()
             values.addOne(v.run(input)?)
@@ -635,16 +657,17 @@ stack.
 `success` reads nothing and yields a value; `failure` reads nothing and fails, expecting `msg`; `err`
 does the same past a commit point, so no alternative is tried after it and the parse answers an
 `Error`. They are the ends of a choice: a default at the end of a list of alternatives, a branch of
-`flatMap` that refuses, a rule that recognises a mistake and reports it as final.
+`flatMap` that refuses, a rule that recognises a mistake and reports it as final. Reading nothing,
+they read any reader: each is a `Rule[Reader, T]`, which is a rule over text and over tokens alike.
 
     // Succeeds with `v`, reading nothing.
-    success[T: Sendable](v: T) -> Parser[T] = Parser(input -> Some(v))
+    success[T: Sendable](v: T) -> Rule[Reader, T] = Rule(input -> Some(v))
 
     // Fails, expecting `msg`.
-    failure[T](msg: string) -> Parser[T] = Parser(input -> input.fail(msg))
+    failure[T](msg: string) -> Rule[Reader, T] = Rule(input -> input.fail(msg))
 
     // Fails, expecting `msg`, past a commit point: no alternative is tried after it.
-    err[T](msg: string) -> Parser[T] = Parser(input ->
+    err[T](msg: string) -> Rule[Reader, T] = Rule(input ->
         input.expect(msg)
         input.committed = true
         None)
@@ -655,9 +678,9 @@ Two parsers look at the text without reading it. `guard(p)` succeeds where `p` d
 value, and leaves the offset where it was.
 
     // The value of `p`, without reading anything: a look ahead.
-    guard[T](@sendable p: -> Parser[T]) -> Parser[T]
+    guard[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, T]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             val start = input.offset
             val mark = input.errorCount()
             val r = q.run(input)
@@ -675,9 +698,9 @@ error recovered from inside one, by `guard` or `not`, is dropped with what it re
 
     // Succeeds without reading anything where `p` fails, and fails where `p` succeeds, then expecting
     // the literal read just before, if one was.
-    not[T](@sendable p: -> Parser[T]) -> Parser[unit]
+    not[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, unit]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             val start = input.offset
             val committed = input.committed
             val mark = input.errorCount()
@@ -698,9 +721,9 @@ where it stopped. Wrapped around the rules of a grammar that does not do what it
 shows the order the rules ran in.
 
     // `p`, printing `trying name at line:column` before it runs and what it answered after.
-    log[T](@sendable p: -> Parser[T], name: string) -> Parser[T]
+    log[I: Reader, T](@sendable p: -> Rule[I, T], name: string) -> Rule[I, T]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             println(s"trying $name at ${input.pos()}")
             val r = q.run(input)
             if r is None then println(s"$name --> failed") else println(s"$name --> parsed up to ${input.pos()}")
@@ -714,9 +737,9 @@ input`, recorded alongside whatever else could have continued there. For `1 + 2 
 the parser expected an operator or the end, and found `)`.
 
     // The value of `p`, which must read to the end of the text.
-    phrase[T](@sendable p: -> Parser[T]) -> Parser[T]
+    phrase[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, T]
         val q = later(p)
-        Parser(input ->
+        Rule(input ->
             val a = q.run(input)?
             if !input.handleWhiteSpace() then return None
             if input.atEnd() then Some(a) else input.fail("end of input"))
@@ -776,6 +799,16 @@ module are those of a grammar that keeps both defaults.
     // end.
     parseAll[T](p: Parser[T], in: string) -> ParseResult[T] = DefaultParsers.parseAll(p, in)
 
+A reader made by hand is parsed as it is: an `Input` with white space of its own, or a `Tokens`,
+which `tokens.lavin` describes. A reader is read once, since a parse moves it.
+
+    // The value of the longest beginning of `in` that `p` reads; the result's `next()` is where it
+    // stopped.
+    parse[I: Reader, T](p: Rule[I, T], in: I) -> ParseResult[T] = in.result(p.run(in))
+
+    // The value of the whole of `in`: `parse` of `phrase(p)`.
+    parseAll[I: Reader, T](p: Rule[I, T], in: I) -> ParseResult[T] = parse(phrase(p), in)
+
 ## Recursive grammars
 
 Every combinator takes its operands by name, as described under Sequence, and `later` is how it
@@ -784,14 +817,14 @@ and keeps what it found. A by-name parameter is evaluated again at each read, so
 rule would be made anew at every step of every parse.
 
     // The parser `p` names, found the first time it runs rather than where `later` is called.
-    private later[T](@sendable p: -> Parser[T]) -> Parser[T]
+    private later[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, T]
         val kept = Later(() -> p)
-        Parser(input -> kept.parser.run(input))
+        Rule(input -> kept.parser.run(input))
 
     // Where `later` keeps the parser it found: a `lazy val` is made once, whichever thread reads it
     // first, so a grammar held in a module-level value may be run by many threads at once.
-    private class Later[T](make: @sendable () -> Parser[T])
-        lazy val parser: Parser[T] = make()
+    private class Later[I: Reader, T](make: @sendable () -> Rule[I, T])
+        lazy val parser: Rule[I, T] = make()
 
 Each level of nesting is a few calls deep, so how deep a text can nest is bounded by the stack of
 the thread parsing it. An arithmetic grammar takes a few thousand levels of parentheses on the main

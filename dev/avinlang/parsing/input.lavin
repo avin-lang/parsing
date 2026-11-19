@@ -45,15 +45,16 @@ parseAll(wholeNumber, "12") match
 ```
 
 The second field of each case is matched by position. `r.next()` reaches it on any result without
-taking the result apart.
+taking the result apart. It is the `Reader` the parse read, an `Input` for text and a `Tokens` for
+a token stream, so it answers what every reader does: its `offset`, `atEnd()` and `pos()`.
 
     // The outcome of a parse: `Success` with the value read, or `Failure` or `Error`, which is a
     // failure past a commit point, with a message. Each holds the input where the parse ended:
     // after the value, or at the furthest place reached.
     data ParseResult[+T]
-        Success(result: T, input: Input)
-        Failure(msg: string, input: Input)
-        Error(msg: string, input: Input)
+        Success(result: T, input: Reader)
+        Failure(msg: string, input: Reader)
+        Error(msg: string, input: Reader)
 
 A result is mostly taken apart by `match`, but the common questions have methods: whether it
 succeeded, its value with a default, and its value changed by a function.
@@ -61,7 +62,7 @@ succeeded, its value with a default, and its value changed by a function.
     impl[T] ParseResult[T]
         // The input where the parse ended: after the value on success, at the furthest place reached
         // otherwise.
-        next() -> Input = self match
+        next() -> Reader = self match
             Success(_, n) -> n
             Failure(_, n) -> n
             Error(_, n) -> n
@@ -122,31 +123,48 @@ A result shows as its position, what kind it is, and the value or the message:
             Failure(m, n) -> out.write(s"[${n.pos()}] failure: $m")
             Error(m, n) -> out.write(s"[${n.pos()}] error: $m")
 
-## The input
+## The reader
 
-An `Input` is the one mutable thing in a parse. Every parser reads from it and moves its offset;
+A `Reader` is the one mutable thing in a parse. Every parser reads from it and moves its offset;
 none copies it. That choice is what makes the library cheap: a parser that succeeds allocates only
 its value and the `Some` around it, and backtracking is restoring one integer. The alternative
 design, an immutable input with every result carrying the input after it, allocates a result at
 every step of every parse.
 
-The input also remembers the furthest failure, and whether the parse has passed a **commit point**.
+What is read comes in two kinds. An `Input`, below, is text, read a character at a time, and its
+offset counts bytes. A `Tokens`, in `tokens.lavin`, is a sequence of tokens a lexer has already
+made, read a token at a time, and its offset counts tokens. Everything else is the same for both,
+so it is the `Reader` both extend: the offset, the record of what was expected, the commit, the
+look aheads and the errors recovered from. A combinator is written once, against the `Reader`,
+and joins rules over either.
+
+A reader also remembers the furthest failure, and whether the parse has passed a **commit point**.
 A commit point is where the grammar knows which rule it is in, so that a failure after it is final:
 there is no point trying the next alternative from the start, and the error should name what the
 committed rule wanted.
 
-Finally it carries the grammar's **white space**: the parser that `literal`, the token parsers,
-`positioned` and `phrase` skip before they read, or `None` where nothing is skipped. It comes from
-the grammar that started the parse, as `RegexParsers` in `parser.lavin` describes.
+What differs between the two is said by four members each one gives: how long it is, the
+position of an offset in the source, how the thing at an offset shows in a message, and how far a
+step past it goes.
 
-    // The text a parser reads and the state of reading it: the byte offset of the next character, the
-    // furthest offset at which anything failed with what was expected there, whether a failure has
-    // passed a commit point, and the white space skipped before each token. Parsers read and move
-    // `offset`; an alternative that fails is retried from where it started.
-    class Input(val source: string, val whiteSpace: Option[Parser[unit]] = Some(spaces))
-        // The text's length in bytes.
-        val length = source.byteLength
-        // The byte offset of the next character to read.
+    // What a parser reads and the state of reading it: the offset of the next element, the furthest
+    // offset at which anything failed with what was expected there, whether a failure has passed a
+    // commit point, and the errors recovered from. Parsers read and move `offset`; an alternative
+    // that fails is retried from where it started.
+    abstract class Reader
+        // How many elements there are: bytes of text, or tokens.
+        length -> int
+
+        // Where offset `at` falls in the source, as a person reads it. `at` may be `length`, the end.
+        position(at: int) -> Position
+
+        // How the element at `at`, which is before the end, shows in a message: `'4'`, `` `then` ``.
+        describeAt(at: int) -> string
+
+        // Moves past the element at `offset`, which is before the end: one character, or one token.
+        skipOne() -> unit
+
+        // The offset of the next element to read.
         var offset = 0
         // Set when a parser fails after a commit point: no alternative is tried after it and the whole
         // parse fails.
@@ -156,16 +174,14 @@ the grammar that started the parse, as `RegexParsers` in `parser.lavin` describe
         var lookingAhead = 0
 
 What has failed furthest, and what was expected there, are private: parsers record a failure with
-`expect` and `fail` below and never read the record back. `known` is the last position the input
-worked out, explained with `position`. `skipping` is set while the white space parser runs, and
-`spaceAt` and `spaceWanted` are the last thing it expected, which is what a white space error
-reports. `tokenStart`, `tokenEnd` and `tokenWanted` are the last `literal` read, which a `not` just
-after it names when it refuses what follows. `found` holds the errors `recover` has recovered from.
+`expect` and `fail` below and never read the record back. `skipping` is set while the white space
+parser runs, and `spaceAt` and `spaceWanted` are the last thing it expected, which is what a white
+space error reports. `tokenStart`, `tokenEnd` and `tokenWanted` are the last `literal` read, which a
+`not` just after it names when it refuses what follows. `found` holds the errors `recover` has
+recovered from.
 
         private var furthest = -1
         private val expectations = Buffer[string]()
-        // The last position worked out, from which the next one is counted when it lies further on.
-        private var known = Position(0, 1, 1)
         // Whether the white space parser is running.
         private var skipping = false
         // Where the white space parser last expected something, and what.
@@ -178,18 +194,27 @@ after it names when it refuses what follows. `found` holds the errors `recover` 
         // The errors recovered from, in the order they were met.
         private val found = Buffer[ParseError]()
 
-These three are what a hand-written parser needs to look at the text.
+These two, with an `Input`'s or a `Tokens`'s `first()`, are what a hand-written parser needs to look
+at what it reads.
 
-        // Whether every character has been read.
+        // Whether everything has been read.
         atEnd() -> bool = offset >= length
-
-        // The character at `offset`, which traps at the end of the text.
-        first() -> char = source.charAt(offset)
 
         // The position of `offset`.
         pos() -> Position = position(offset)
 
 ### White space
+
+Text has white space between its tokens; a token stream has none left, its lexer having dropped
+it. A reader skips white space only where it has a white space parser, which an `Input` may have
+and a `Tokens` never does. `hasWhiteSpace` says whether there is one, and `runWhiteSpace` runs it
+once, answering whether it succeeded.
+
+        // Whether this reader skips white space before each token.
+        hasWhiteSpace() -> bool = false
+
+        // Runs the white space parser once, answering whether it succeeded.
+        runWhiteSpace() -> bool = true
 
 `handleWhiteSpace` moves past the grammar's white space. The white space parser is a parser like
 any other, so it may be written with `literal` or `rep`, and those must not skip white space
@@ -215,25 +240,22 @@ None`.
         // Moves past the grammar's white space, if it skips any. Answers `false`, having recorded the
         // error and committed, where the white space parser fails past a commit point.
         handleWhiteSpace() -> bool
-            if skipping then return true
-            whiteSpace match
-                Some(ws) ->
-                    val start = offset
-                    val wasCommitted = committed
-                    committed = false
-                    spaceAt = -1
-                    skipping = true
-                    val r = ws.run(self)
-                    skipping = false
-                    if r is None
-                        if committed
-                            if spaceAt >= 0 then recordAt(spaceAt, spaceWanted)
-                            offset = start
-                            return false
-                        offset = start
-                    committed = wasCommitted
-                    true
-                None -> true
+            if skipping || !hasWhiteSpace() then return true
+            val start = offset
+            val wasCommitted = committed
+            committed = false
+            spaceAt = -1
+            skipping = true
+            val read = runWhiteSpace()
+            skipping = false
+            if !read
+                if committed
+                    if spaceAt >= 0 then recordAt(spaceAt, spaceWanted)
+                    offset = start
+                    return false
+                offset = start
+            committed = wasCommitted
+            true
 
 ### Recording what was expected
 
@@ -334,34 +356,6 @@ expected at the furthest place.
             expectations.clear()
             expectations.addOne(what)
 
-### Lines and columns
-
-A position is worked out only when it is asked for: for an error, once, and for `positioned`, once
-per value. Counting from the start of the text each time would make a parse that asks for many
-positions quadratic. The input keeps the last position it worked out and counts on from there when
-the next one is further along, so positions asked for in order cost one pass over the text in all.
-
-A column counts characters. In UTF-8 every byte of the form `10xxxxxx` continues a character, so a
-character starts at every other byte, and only those advance the column.
-
-        // The position of byte offset `at`, counted from the last position worked out when `at` lies
-        // after it, so positions asked for in order cost one pass over the text.
-        position(at: int) -> Position
-            val from = if at >= known.offset then known else Position(0, 1, 1)
-            var i = from.offset
-            var line = from.line
-            var column = from.column
-            while i < at
-                int(source.byteAt(i)) match
-                    0x0a ->
-                        line += 1
-                        column = 1
-                    0x80..0xbf -> ()
-                    _ -> column += 1
-                i += 1
-            known = Position(at, line, column)
-            known
-
 ### The result
 
 When the parse is over, what the parser answered becomes the result. A failure is reported at the
@@ -370,8 +364,9 @@ furthest place reached, and the input is left there as the result's `next`.
 The expectations are listed in the order the grammar tried them, which is the order its author wrote
 the alternatives in, and once each, since two alternatives can expect the same thing at the same
 place, as `a ~ b | a ~ b ~ c` does. They are joined the way a sentence joins them: `a`, `a or b`,
-`a, b or c`. What was found is the character's `debug` form, quoted and escaped, so a newline shows
-as `'\n'` rather than breaking the message across lines. A failure that expected nothing in
+`a, b or c`. What was found is the reader's `describeAt`: in text, the character's `debug` form,
+quoted and escaped, so a newline shows as `'\n'` rather than breaking the message across lines; in
+a token stream, the token as the grammar describes it. A failure that expected nothing in
 particular, which happens when a look ahead refuses a character, says only what it found.
 
         // What a parse that answered `r` reports: its value, or the furthest failure with every distinct
@@ -389,7 +384,7 @@ particular, which happens when a look ahead refuses a character, says only what 
         // found.
         private message(at: int, expected: bool) -> string
             val seen = if expected then expectations.distinct else Vector.empty[string]()
-            val there = if at >= length then "end of input" else debug(source.charAt(at))
+            val there = if at >= length then "end of input" else describeAt(at)
             seen.length match
                 0 -> s"unexpected $there"
                 1 -> s"expected ${seen(0)}, found $there"
@@ -401,7 +396,9 @@ particular, which happens when a look ahead refuses a character, says only what 
 the bookkeeping, since the record of what was expected is its own. `recoverFrom` takes the failure
 of a rule that began at `start` as the message the parse would have ended with, at the furthest place
 reached. A rule that failed without recording anything at or past its start, as a look ahead that
-refuses does, is reported at its start as finding something unexpected. The error is kept in the
+refuses does, is reported at its start as finding something unexpected. The resynchronisation is
+given as a function that runs it and answers whether it succeeded, since the reader knows nothing
+of the rules over it. The error is kept in the
 list the result's `errors()` answers, unless the error just before it is at the same place: a
 `recover` that resynchronised without moving, and fails there again, has found one mistake, not
 two. Then the record is cleared, the expectations and the commit both, so the next failure is
@@ -418,8 +415,9 @@ the declaration's rule.
         // Takes the failure of a rule that began at `start` as an error recovered from, skipping from
         // where it was with `sync`: keeps the error, clears the record of what was expected and the
         // commit, and answers the error. Answers `None`, the record and the offset as they were, where
-        // the failure is at the end of the text or `sync` fails.
-        recoverFrom[U](start: int, sync: Parser[U]) -> Option[ParseError]
+        // the failure is at the end of the text or `sync` fails. `sync` runs the resynchronisation and
+        // answers whether it succeeded.
+        recoverFrom(start: int, sync: () -> bool) -> Option[ParseError]
             val reached = furthest >= start
             val at = if reached then furthest else start
             if at >= length then return None
@@ -429,10 +427,10 @@ the declaration's rule.
             val keptExpected = expectations.toList
             val keptCommitted = committed
             val mark = found.length
-            if found.lastOption.forall(prev -> prev.pos.offset != at) then found.addOne(e)
+            if found.lastOption.forall(prev -> prev.pos.offset != e.pos.offset) then found.addOne(e)
             forget()
             offset = at
-            if sync.run(self) is None
+            if !sync()
                 dropErrors(mark)
                 furthest = keptFurthest
                 expectations.clear()
@@ -474,3 +472,67 @@ when they go back.
 
         // Adds `es` to the errors recovered from.
         addErrors(es: List[ParseError]) = found.addAll(es)
+
+## The text
+
+An `Input` is a `Reader` of text. Its offset counts bytes, because that is what indexing a string
+costs nothing for, and a step past one element is a step past one character, however many bytes it
+takes.
+
+It carries the grammar's **white space**: the parser that `literal`, the token parsers,
+`positioned` and `phrase` skip before they read, or `None` where nothing is skipped. It comes from
+the grammar that started the parse, as `RegexParsers` in `parser.lavin` describes.
+
+    // Text a parser reads: the reader whose offset is a byte offset into `source`, with the white space
+    // skipped before each token.
+    class Input(val source: string, val whiteSpace: Option[Parser[unit]] = Some(spaces)): Reader()
+        // The last position worked out, from which the next one is counted when it lies further on.
+        private var known = Position(0, 1, 1)
+
+        // The text's length in bytes.
+        override length -> int = source.byteLength
+
+        // The character at `offset`, which traps at the end of the text.
+        first() -> char = source.charAt(offset)
+
+        // The character at `at`, quoted and escaped.
+        override describeAt(at: int) -> string = debug(source.charAt(at))
+
+        // Moves past the character at `offset`.
+        override skipOne() = offset += width(first())
+
+        // Whether a white space parser was given.
+        override hasWhiteSpace() -> bool = whiteSpace.isDefined
+
+        // Runs the white space parser, answering whether it succeeded.
+        override runWhiteSpace() -> bool = whiteSpace match
+            Some(ws) -> ws.run(self) is Some(_)
+            None -> true
+
+### Lines and columns
+
+A position is worked out only when it is asked for: for an error, once, and for `positioned`, once
+per value. Counting from the start of the text each time would make a parse that asks for many
+positions quadratic. The input keeps the last position it worked out and counts on from there when
+the next one is further along, so positions asked for in order cost one pass over the text in all.
+
+A column counts characters. In UTF-8 every byte of the form `10xxxxxx` continues a character, so a
+character starts at every other byte, and only those advance the column.
+
+        // The position of byte offset `at`, counted from the last position worked out when `at` lies
+        // after it, so positions asked for in order cost one pass over the text.
+        override position(at: int) -> Position
+            val from = if at >= known.offset then known else Position(0, 1, 1)
+            var i = from.offset
+            var line = from.line
+            var column = from.column
+            while i < at
+                int(source.byteAt(i)) match
+                    0x0a ->
+                        line += 1
+                        column = 1
+                    0x80..0xbf -> ()
+                    _ -> column += 1
+                i += 1
+            known = Position(at, line, column)
+            known
