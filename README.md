@@ -25,7 +25,7 @@ Name it in your package's `avin.hocon`:
 
 ```hocon
 dependencies {
-  parsing { git = "github.com/avin-lang/parsing", version = "0.6.0" }
+  parsing { git = "github.com/avin-lang/parsing", version = "0.6.1" }
 }
 ```
 
@@ -303,6 +303,57 @@ type whose values all compare equal, and a default: `token(Indent())` then reads
 it stands. `tokens.lavin` shows it, and [`tests/blocks.avin`](tests/blocks.avin) is a whole
 indentation language lexed and parsed this way.
 
+## Blocks marked by indentation
+
+An indentation language's lexer is written with the string combinators and keeps no offside
+bookkeeping of its own: it marks where each line begins with a token holding the line's `Margin`,
+and a `Layout` replaces the marks with the language's indent, dedent and newline tokens, reporting
+every badly indented line while it carries on. [`layout.lavin`](dev/avinlang/parsing/layout.lavin)
+is the rule in full.
+
+| API | Meaning |
+| --- | --- |
+| `margin` | the spaces and tabs a line begins with, as a `Margin(width, tabbed, start, text)`; skips no white space and always succeeds |
+| `lineBreak` | `\r\n` or `\n`, after white space, expected as `end of line` |
+| `spanned(p)` | the value of `p` as a `Spanned(value, start, end)`: where it began, after white space, and where it ended |
+| `trait Layout[E]` | a language's layout: overrides `lineStart(t)`, the margin a mark holds; `indentToken(m)`, `dedentToken(m)`, `newlineToken(at)`, the tokens it adds; `tokenEnd(t)`; and optionally `step()` (0, any deeper, by default), `continues(t)`, `opens(t)`, `closes(t)` and `trivia(t)` |
+| `rules.layout(items, end)` | a `LaidOut(tokens, errors)`: the tokens laid out, and the `LayoutError`s in order of their lines |
+| `TabIndent(m)`, `UnevenIndent(m, outer, step)`, `Misaligned(m, inner, outer)` | a tab in a margin; a block indented other than `step`; a line that lines up with no open block. Each has `margin()`, `pos()` (the start of its line), `message()`, and shows as `line:column: message` |
+
+A line opens a block where it is indented further than its block, closes every block it leaves
+where it is indented less, and ends the line above with a newline placed where that line's last
+token ended; indents and dedents stand at the line's margin, and the end of the text ends the last
+line and closes every open block there. A blank line, or one holding only trivia, is no line. A
+line beginning with a token that `continues`, indented further than its block, carries on the line
+above. Between a token that `opens` and one that `closes`, line ends are white space. A tab is
+reported and the line read one step into its block, or in its block where it is not indented
+further; a block indented other than `step` is reported and opens where its line is; a line between
+its block and the one outside it is reported and stays in its block, which is indented as the line
+is from then on.
+
+```avin
+object Lexer: RegexParsers
+  override whiteSpace() -> Parser[unit] = rep(elem("space", c -> c == ' ' || c == '\t')) ^^^ ()
+  lazy val word: Parser[Tok] = spanned(ident) ^^ (s -> Word(s.value, s.start, s.end))
+  lazy val line: Parser[List[Tok]] = (margin ^^ (m -> Mark(m))) ~ rep(word) ^^ (match (m, ts) -> m :: ts)
+  lazy val lines: Parser[List[List[Tok]]] = repsep(line, lineBreak)
+
+object Lines: Layout[Tok]
+  override lineStart(t: Tok) -> Option[Margin] = t match
+    Mark(m) -> Some(m)
+    _ -> None
+  override indentToken(at: Margin) -> Tok = Indent(at.text)
+  override dedentToken(at: Margin) -> Tok = Dedent(at.text)
+  override newlineToken(at: Position) -> Tok = Newline(at)
+  override tokenEnd(t: Tok) -> Position = t.end
+  override step() -> int = 2
+
+val laid = Lines.layout(Lexer.parseAll(Lexer.lines, text).get().flatMap(l -> l).toVector, endOfText)
+```
+
+`tests/blocks.avin` lexes Blocks this way, and `tests/layout_tests.avin` gives a second token type
+a two-column step, `.` continuation lines, brackets and comments kept as trivia.
+
 ## Recursive grammars
 
 Module-level rules are `lazy val`s, and they may refer to each other and to themselves in any
@@ -361,6 +412,41 @@ avin run . -- parse samples/geometry.kite
   (`Vector[(E, Position)]`), keeps tokens free of positions but splits what the lexer makes in two.
 - The end of input after the last token defaults to that token's position, or `1:1` for an empty
   stream; `TokenParsers.endOf` or an `end` argument places it exactly.
+- The layout reads the lexer's own token stream, in which a token of the language's type marks each
+  line with its `Margin`, rather than a callback the lexer calls at each line. The lexer then stays
+  a plain grammar of text, and the layout is a function of tokens, tested apart from any lexer.
+  **Review with the user:** a callback would spare the mark case in the token type, but would tie
+  the layout to the lexer's control flow.
+- Bracket depth is kept by the layout, from `opens` and `closes` on tokens, so the lexer marks
+  every line, inside brackets too, and the marks there are dropped. An unmatched closer leaves the
+  depth at 0; a bracket never closed holds every line end to the end of the text. **Review with the
+  user.**
+- A line continues the one above only when its first token `continues` and it is indented further
+  than its *block*, not than the line above, as fettle's rule has it. **Review with the user.**
+- A tab counts one column in `Margin.width`, but the layout does not trust it: the line is read one
+  `step` into its block where it is indented further, in its block otherwise (with a step of 0, at
+  its counted width where that is deeper), so one tab is one error. **Review with the user.**
+- A misaligned line stays in its inner block, whose indentation becomes the line's, so the lines
+  after it at that indentation stay there without further errors. **Review with the user.**
+- Every error is at the start of its line (`margin().start`), and keeps the margin, so a language
+  can report the span from the line's start to its text, or name widths in its own words.
+  **Review with the user.**
+- Trivia on a line that holds other tokens stay where they are, before that line's newline; trivia
+  on lines of their own are held and come after the newline ending the line above and before the
+  next line's indents or dedents. **Review with the user.**
+- Dedents at the end of the text stand at `end`, given to `layout`, as a `Margin` of width 0, not
+  where the last line ended. **Review with the user.**
+- `spanned(p)` answers a `Spanned(value, start, end)` rather than a tuple, so a lexer reads
+  `s.start` and `s.end` by name; it is how a token of a `data` type, which cannot be `Positional`,
+  is placed. **Review with the user.**
+
+## Changes in 0.6.1
+
+New: `margin`, `lineBreak`, `Margin`, `trait Layout[E]`, `LaidOut`, `LayoutError` and `spanned`, as
+*Blocks marked by indentation* describes. Nothing that compiled with 0.6.0 changes. The Blocks test
+language's lexer is now written with the string combinators and a `Layout`; its comments run from
+`#` to the end of the line, a tab between tokens is white space, and its last dedents stand at the
+end of the text.
 
 ## Changes in 0.6.0
 

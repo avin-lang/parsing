@@ -570,6 +570,27 @@ white space first, so the position is the value's own and not that of the space 
                     Some(a)
                 None -> None)
 
+A value that is not a node, a lexer's token most often, takes its place from `spanned(p)`: the
+value of `p` with where it began, after white space as `positioned` places it, and where it ended,
+just past the last thing `p` read. A token of a `data` type is made from the three, and the end is
+what a layout puts a line's end after, as `layout.lavin` describes:
+
+```avin
+lazy val word: Parser[Tok] = spanned(ident) ^^ (s -> Word(s.value, s.start, s.end))
+```
+
+    // A value, and where in the text it began and where it ended.
+    data Spanned[T](value: T, start: Position, end: Position)
+
+    // The value of `p`, with where `p` starts after any white space and where it stops.
+    spanned[I: Reader, T](@sendable p: -> Rule[I, T]) -> Rule[I, Spanned[T]]
+        val q = later(p)
+        Rule(input ->
+            if !input.handleWhiteSpace() then return None
+            val start = input.offset
+            val a = q.run(input)?
+            Some(Spanned(a, input.position(start), input.pos())))
+
 ## Operators and their grouping
 
 An expression grammar is mostly levels of binary operators. Written as plain repetition each level

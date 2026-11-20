@@ -2,17 +2,22 @@ module tests
 
 // Blocks: a small language whose blocks are marked by indentation, lexed into tokens and parsed
 // with the token leaves. A program is lines of statements: `name = number`, `print name`, and
-// `if name` followed by a block indented deeper, committed once its `if` is read.
+// `if name` followed by a block indented deeper, committed once its `if` is read. A comment runs
+// from `#` to the end of its line.
 //
 //     a = 1
 //     if a
-//       print a
+//       print a  # shows 1
 //     b = 2
-import dev.avinlang.parsing.{ParseResult, Position, Rule, TokenParsers, Tokens, opt, recover, rep, rep1}
+import dev.avinlang.parsing.{
+  LaidOut, Layout, Margin, ParseResult, Parser, Position, RegexParsers, Rule, TokenParsers, Tokens, elem, lineBreak,
+  margin, not, opt, recover, rep, rep1, repsep, spanned
+}
 
-// Where a token stands. Every `At` equals every other, so two tokens compare by what they are and
-// not by where, and the grammar's `token(Name("if"))` reads an `if` wherever it stands.
-class At(val pos: Position)
+// Where a token stands: where it begins and where it ends. Every `At` equals every other, so two
+// tokens compare by what they are and not by where, and the grammar's `token(Name("if"))` reads an
+// `if` wherever it stands.
+class At(val pos: Position, val end: Position)
 
 impl Eq for At
   equals(other: At) -> bool = true
@@ -21,35 +26,47 @@ impl Hash for At
   hash() -> long = 0
 
 // The place of a token written in a grammar rather than lexed: the start of the text.
-nowhere() -> At = At(Position(0, 1, 1))
+nowhere() -> At = placed(0, 1, 1)
 
-// A token at byte `offset` of the text, on `line` at `column`.
-placed(offset: int, line: int, column: int) -> At = At(Position(offset, line, column))
+// A token at byte `offset` of the text, on `line` at `column`, ending where it begins.
+placed(offset: int, line: int, column: int) -> At
+  val p = Position(offset, line, column)
+  At(p, p)
 
-// The tokens of Blocks.
+// The tokens of Blocks. A `Line` marks where a line begins, as the lexer reads it; the layout
+// replaces the marks with `Newline`, `Indent` and `Dedent`, so the grammar never sees one.
 data Tok
   Name(text: string, at: At = nowhere())
   Num(value: long, at: At = nowhere())
   Sym(text: string, at: At = nowhere())
+  Line(margin: Margin)
   Newline(at: At = nowhere())
   Indent(at: At = nowhere())
   Dedent(at: At = nowhere())
 
 impl Tok
+  // Where the token stands in the text.
+  place -> At = self match
+    Name(_, a) -> a
+    Num(_, a) -> a
+    Sym(_, a) -> a
+    Line(m) -> At(m.start, m.text)
+    Newline(a) -> a
+    Indent(a) -> a
+    Dedent(a) -> a
+
   // Where the token begins in the text.
-  where -> Position = self match
-    Name(_, a) -> a.pos
-    Num(_, a) -> a.pos
-    Sym(_, a) -> a.pos
-    Newline(a) -> a.pos
-    Indent(a) -> a.pos
-    Dedent(a) -> a.pos
+  where -> Position = place.pos
+
+  // Where the token ends in the text.
+  end -> Position = place.end
 
   // The token as a message shows it.
   shown -> string = self match
     Name(t, _) -> s"`$t`"
     Num(v, _) -> s"$v"
     Sym(t, _) -> s"`$t`"
+    Line(_) -> "line start"
     Newline(_) -> "end of line"
     Indent(_) -> "indent"
     Dedent(_) -> "dedent"
@@ -58,52 +75,53 @@ impl Tok
 impl Display for Tok
   display(out: Writer, spec: FormatSpec) = out.write(shown)
 
+// The lexer of Blocks, written with the string combinators: each line is a mark holding its margin,
+// then its names, numbers and symbols. Between tokens it skips spaces, tabs and comments, never a
+// line break.
+object BlocksText: RegexParsers
+  override whiteSpace() -> Parser[unit] = rep(
+    elem("space", c -> c == ' ' || c == '\t') ^^^ () | elem('#') ~ rep(
+      elem("comment", c -> c != '\n' && c != '\r')
+    ) ^^^ ()
+  ) ^^^ ()
+
+  lazy val word: Parser[Tok] = spanned(
+    elem("letter", c -> c.isLetter) ~ rep(elem("letter or digit", c -> c.isLetterOrDigit))
+  ) ^^ (s -> Name((s.value.0 :: s.value.1).mkString(""), At(s.start, s.end)))
+  lazy val number: Parser[Tok] = spanned(rep1(elem("digit", c -> c.isDigit))) ^^ (
+    s -> Num(s.value.mkString("").toLongOption().getOrElse(0), At(s.start, s.end))
+  )
+  lazy val symbol: Parser[Tok] = spanned(
+    elem("symbol", c -> !(c == ' ' || c == '\t' || c == '\n' || c.isLetterOrDigit))
+  ) ^^ (s -> Sym(s"${s.value}", At(s.start, s.end)))
+  lazy val item: Parser[Tok] = not(lineBreak) ~> (word | number | symbol)
+  lazy val line: Parser[List[Tok]] = (margin ^^ (m -> Line(m))) ~ rep(item) ^^ (match (m, ts) -> m :: ts)
+  lazy val lines: Parser[List[List[Tok]]] = repsep(line, lineBreak)
+
+// The layout of Blocks: a block is indented any amount deeper than the one it is in. An indent or
+// dedent stands where its line's first token is, a newline where the line's last token ends.
+object BlocksLayout: Layout[Tok]
+  override lineStart(t: Tok) -> Option[Margin] = t match
+    Line(m) -> Some(m)
+    _ -> None
+
+  override indentToken(at: Margin) -> Tok = Indent(At(at.text, at.text))
+  override dedentToken(at: Margin) -> Tok = Dedent(At(at.text, at.text))
+  override newlineToken(at: Position) -> Tok = Newline(At(at, at))
+  override tokenEnd(t: Tok) -> Position = t.end
+
+// The marked lines of `text`, as the lexer reads them.
+marked(text: string) -> Vector[Tok] = BlocksText.parseAll(BlocksText.lines, text).get().flatMap(l -> l).toVector
+
+// The tokens of `text` laid out, with the layout's errors.
+lexed(text: string) -> LaidOut[Tok] = BlocksLayout.layout(marked(text), endOfText(text))
+
 // The tokens of `text`. A line indented deeper than the block it is in opens a block with an
 // `Indent` where its first token is; a line indented less closes each block it leaves with a
-// `Dedent` there. Then come its names, numbers and symbols, and a `Newline` where it ends. Blank
-// lines make no tokens, and every block still open at the end is closed where the last line ends.
-lex(text: string) -> Vector[Tok]
-  val out = Buffer[Tok]()
-  var levels = List(0)
-  var offset = 0
-  var line = 1
-  var last = placed(0, 1, 1)
-  for row in text.split('\n')
-    var i = 0
-    while i < row.byteLength && row.charAt(i) == ' '
-      i += 1
-    if i < row.byteLength
-      if i > levels.head
-        out.append(Indent(placed(offset + i, line, i + 1)))
-        levels = i :: levels
-      while i < levels.head
-        levels = levels.tail
-        out.append(Dedent(placed(offset + i, line, i + 1)))
-      while i < row.byteLength
-        val start = i
-        val c = row.charAt(i)
-        val here = placed(offset + start, line, start + 1)
-        if c == ' '
-          i += 1
-        else if c.isLetter
-          while i < row.byteLength && row.charAt(i).isLetterOrDigit
-            i += 1
-          out.append(Name(row.slice(start, i), here))
-        else if c.isDigit
-          while i < row.byteLength && row.charAt(i).isDigit
-            i += 1
-          out.append(Num(row.slice(start, i).toLongOption().getOrElse(0), here))
-        else
-          i += 1
-          out.append(Sym(row.slice(start, i), here))
-      last = placed(offset + i, line, i + 1)
-      out.append(Newline(last))
-    offset += row.byteLength + 1
-    line += 1
-  while levels.head > 0
-    levels = levels.tail
-    out.append(Dedent(last))
-  out.toVector
+// `Dedent` there. Then come its names, numbers and symbols, and a `Newline` where its last token
+// ends. Blank and comment lines make no tokens, and every block still open at the end is closed
+// where the text ends.
+lex(text: string) -> Vector[Tok] = lexed(text).tokens
 
 // Where `text` ends: its length, on its last line, one column past that line's last character.
 endOfText(text: string) -> Position
@@ -121,10 +139,16 @@ object Blocks: TokenParsers[Tok]
   lazy val symbol: Rule[Tokens[Tok], Tok] = token("symbol", t -> t is Sym(_, _))
   lazy val newline: Rule[Tokens[Tok], Tok] = token(Newline())
 
-  lazy val assign: Rule[Tokens[Tok], string] = name ~ (token(Sym("=")) ~> number) <~ newline ^^ (match (n, v) -> s"$n = $v")
+  lazy val assign: Rule[Tokens[Tok], string] = name ~ (token(Sym("=")) ~> number) <~ newline ^^ (
+    match (n, v) -> s"$n = $v"
+  )
   lazy val printStmt: Rule[Tokens[Tok], string] = token(Name("print")) ~> name <~ newline ^^ (n -> s"print $n")
-  lazy val ifStmt: Rule[Tokens[Tok], string] = token(Name("if")) ~! (name ~ (newline ~> block)) ^^ (match (_, (c, b)) -> s"if $c $b")
-  lazy val block: Rule[Tokens[Tok], string] = token(Indent()) ~> rep1(stmt) <~ token(Dedent()) ^^ (ss -> s"{${ss.mkString("; ")}}")
+  lazy val ifStmt: Rule[Tokens[Tok], string] = token(Name("if")) ~! (name ~ (newline ~> block)) ^^ (
+    match (_, (c, b)) -> s"if $c $b"
+  )
+  lazy val block: Rule[Tokens[Tok], string] = token(Indent()) ~> rep1(stmt) <~ token(Dedent()) ^^ (
+    ss -> s"{${ss.mkString("; ")}}"
+  )
   lazy val stmt: Rule[Tokens[Tok], string] = ifStmt | printStmt | assign
   lazy val program: Rule[Tokens[Tok], List[string]] = rep(stmt)
 

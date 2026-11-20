@@ -1,0 +1,315 @@
+module tests
+
+// The layout: the offside rule applied to a lexer's marked lines, over a token type of its own,
+// `Lx`, whose language indents a block exactly two columns, carries a line on with one beginning
+// with `.`, holds line ends inside brackets and keeps its comments as trivia. `Blocks`, in
+// `blocks.avin`, is the same rule over another token type with every default.
+import dev.avinlang.parsing.{
+  LaidOut, Layout, Margin, Misaligned, Parser, Position, RegexParsers, TabIndent, UnevenIndent, elem, ident, lineBreak,
+  literal, margin, parse, rep, repsep, spanned
+}
+
+// The tokens of the test language. A `Mark` begins each line; `Nl`, `In` and `Out` are what a
+// layout puts in.
+data Lx
+  Term(text: string, start: Position, end: Position)
+  Punct(text: string, start: Position, end: Position)
+  Note(text: string, start: Position, end: Position)
+  Mark(margin: Margin)
+  Nl(at: Position)
+  In(at: Margin)
+  Out(at: Margin)
+
+impl Lx
+  // Where the token begins.
+  begins -> Position = self match
+    Term(_, s, _) -> s
+    Punct(_, s, _) -> s
+    Note(_, s, _) -> s
+    Mark(m) -> m.start
+    Nl(p) -> p
+    In(m) -> m.text
+    Out(m) -> m.text
+
+  // Where the token ends.
+  ends -> Position = self match
+    Term(_, _, e) -> e
+    Punct(_, _, e) -> e
+    Note(_, _, e) -> e
+    Mark(m) -> m.text
+    Nl(p) -> p
+    In(m) -> m.text
+    Out(m) -> m.text
+
+  // The token as the tests show it.
+  shown -> string = self match
+    Term(t, _, _) -> t
+    Punct(t, _, _) -> t
+    Note(t, _, _) -> t
+    Mark(_) -> "MARK"
+    Nl(_) -> "NL"
+    In(_) -> "IN"
+    Out(_) -> "OUT"
+
+// The lexer of the test language: names, punctuation (`..` as one token) and comments, each line a
+// mark and the tokens after it. Only spaces and tabs are white space.
+object LxText: RegexParsers
+  override whiteSpace() -> Parser[unit] = rep(elem("space", c -> c == ' ' || c == '\t')) ^^^ ()
+
+  lazy val word: Parser[Lx] = spanned(
+    elem("letter", c -> c.isLetterOrDigit || c == '_') ~ rep(elem("letter", c -> c.isLetterOrDigit || c == '_'))
+  ) ^^ (s -> Term((s.value.0 :: s.value.1).mkString(""), s.start, s.end))
+  lazy val note: Parser[Lx] = spanned(
+    elem('#') ~> rep(elem("comment", c -> c != '\n' && c != '\r'))
+  ) ^^ (s -> Note(s"#${s.value.mkString("")}", s.start, s.end))
+  lazy val dots: Parser[Lx] = spanned(literal("..")) ^^ (s -> Punct(s.value, s.start, s.end))
+  lazy val punct: Parser[Lx] = spanned(
+    elem("punctuation", c -> !(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c.isLetterOrDigit))
+  ) ^^ (s -> Punct(s"${s.value}", s.start, s.end))
+  lazy val item: Parser[Lx] = note | word | dots | punct
+  lazy val line: Parser[List[Lx]] = (margin ^^ (m -> Mark(m))) ~ rep(item) ^^ (match (m, ts) -> m :: ts)
+  lazy val lines: Parser[List[List[Lx]]] = repsep(line, lineBreak)
+
+// Two columns a block, a line beginning `.` carries on the one above, brackets hold line ends, and
+// comments are trivia.
+object LxLayout: Layout[Lx]
+  override lineStart(t: Lx) -> Option[Margin] = t match
+    Mark(m) -> Some(m)
+    _ -> None
+
+  override indentToken(at: Margin) -> Lx = In(at)
+  override dedentToken(at: Margin) -> Lx = Out(at)
+  override newlineToken(at: Position) -> Lx = Nl(at)
+  override tokenEnd(t: Lx) -> Position = t.ends
+  override step() -> int = 2
+  override continues(t: Lx) -> bool = t is Punct(".", _, _)
+  override opens(t: Lx) -> bool = t is Punct("(", _, _) || t is Punct("[", _, _) || t is Punct("{", _, _)
+  override closes(t: Lx) -> bool = t is Punct(")", _, _) || t is Punct("]", _, _) || t is Punct("}", _, _)
+  override trivia(t: Lx) -> bool = t is Note(_, _, _)
+
+// The same tokens with every default: any deeper indentation opens a block, no line continues
+// another, brackets hold nothing and every token counts.
+object LooseLayout: Layout[Lx]
+  override lineStart(t: Lx) -> Option[Margin] = t match
+    Mark(m) -> Some(m)
+    _ -> None
+
+  override indentToken(at: Margin) -> Lx = In(at)
+  override dedentToken(at: Margin) -> Lx = Out(at)
+  override newlineToken(at: Position) -> Lx = Nl(at)
+  override tokenEnd(t: Lx) -> Position = t.ends
+
+// `text` lexed into marked lines and laid out by `rules`.
+laid(rules: Layout[Lx], text: string) -> LaidOut[Lx] = rules.layout(
+  LxText.parseAll(LxText.lines, text).get().flatMap(l -> l).toVector,
+  endOfText(text)
+)
+
+// A layout's tokens as the tests show them, then each error.
+render(r: LaidOut[Lx]) -> string = (
+  r.tokens.map(t -> t.shown).mkString(" ") :: r.errors.map(e -> s"$e")
+).mkString(" | ")
+
+// `text` laid out by `LxLayout`, shown.
+out(text: string) -> string = render(laid(LxLayout, text))
+
+// `text` laid out by `LooseLayout`, shown.
+loose(text: string) -> string = render(laid(LooseLayout, text))
+
+// Each token `text` lays out to by `LxLayout`, and where it begins.
+places(text: string) -> string = laid(LxLayout, text).tokens.map(t -> s"${t.shown}@${t.begins}").mkString(" ")
+
+@test("a margin is the spaces and tabs a line begins with, read without skipping white space")
+margins()
+  val m = parse(margin, "  \tx").get()
+  assertEq(m.width, 3)
+  assertEq(m.tabbed, true)
+  assertEq(s"${m.start} ${m.text}", "1:1 1:4")
+  assertEq(parse(margin, "x").get().width, 0)
+  assertEq(parse(margin, "x").get().tabbed, false)
+  assertEq(parse(margin, "").get().width, 0)
+  assertEq(parse(margin, "\n  x").get().width, 0)
+  assertEq(parse(margin, "    ").get().width, 4)
+  assertEq(s"${parse(margin, "  ñ").get().text}", "1:3")
+  assertEq(parse(margin, "  x").next().offset, 2)
+
+@test("a line break is `\\r\\n` or `\\n` after white space, and expected as the end of a line")
+lineBreaks()
+  assertEq(LxText.parse(lineBreak, "\r\n").get(), "\r\n")
+  assertEq(LxText.parse(lineBreak, "\n").get(), "\n")
+  assertEq(LxText.parse(lineBreak, "  \nx").next().offset, 3)
+  assertEq(shown(LxText.parse(lineBreak, "x")), "failure 1:1: expected end of line, found 'x'")
+  assertEq(shown(LxText.parse(lineBreak, "\r")), "failure 1:1: expected end of line, found '\\r'")
+  assertEq(shown(LxText.parse(lineBreak, "")), "failure 1:1: expected end of line, found end of input")
+
+@test("spanned gives a value where it began, after white space, and where it ended")
+spans()
+  val s = parse(spanned(ident), "  ab c").get()
+  assertEq(s"${s.value} ${s.start} ${s.end}", "ab 1:3 1:5")
+  assertEq(s.start.offset, 2)
+  assertEq(s.end.offset, 4)
+  val across = parse(spanned(ident ~ ident), "a\n  bc").get()
+  assertEq(s"${across.start} ${across.end}", "1:1 2:5")
+  val u = parse(spanned(ident), "ñu x").get()
+  assertEq(s"${u.start} ${u.end} ${u.end.offset}", "1:1 1:3 3")
+  assertEq(shown(parse(spanned(ident), "  1")), "failure 1:3: expected identifier, found '1'")
+  assertEq(s"${parse(spanned(rep(ident)), "").get().end}", "1:1")
+
+@test("an empty text, and one of blank lines only, lays out to nothing")
+emptyText()
+  assertEq(out(""), "")
+  assertEq(out("\n\n"), "")
+  assertEq(out("   \n  \n    "), "")
+  assertEq(loose(""), "")
+  assertEq(laid(LxLayout, "").errors.length, 0)
+  assertEq(laid(LxLayout, "\t\n").errors.length, 0)
+  assertEq(out("# only a note"), "# only a note")
+
+@test("one line ends with a newline where its last token ends")
+oneLine()
+  assertEq(out("a b"), "a b NL")
+  assertEq(places("a b  "), "a@1:1 b@1:3 NL@1:4")
+  assertEq(out("a\n"), "a NL")
+  assertEq(out("\n\na"), "a NL")
+  assertEq(places("  a"), "IN@1:3 a@1:3 NL@1:4 OUT@1:4")
+
+@test("the end of the text closes every open block, at the end")
+endClosesBlocks()
+  assertEq(out("a\n  b\n    c"), "a NL IN b NL IN c NL OUT OUT")
+  assertEq(places("a\n  b\n    c\n"), "a@1:1 NL@1:2 IN@2:3 b@2:3 NL@2:4 IN@3:5 c@3:5 NL@3:6 OUT@4:1 OUT@4:1")
+  assertEq(out("a\n  b\n    c\n      d\n\n\n"), "a NL IN b NL IN c NL IN d NL OUT OUT OUT")
+  val r = laid(LxLayout, "a\n  b")
+  assertEq(r.tokens(r.tokens.length - 1).begins.offset, 5)
+
+@test("a line closes every block it leaves at once, at its margin")
+dedentSeveral()
+  assertEq(out("a\n  b\n    c\n      d\ne"), "a NL IN b NL IN c NL IN d NL OUT OUT OUT e NL")
+  assertEq(
+    places("a\n  b\n    c\nd"),
+    "a@1:1 NL@1:2 IN@2:3 b@2:3 NL@2:4 IN@3:5 c@3:5 NL@3:6 OUT@4:1 OUT@4:1 d@4:1 NL@4:2"
+  )
+  assertEq(out("a\n  b\n    c\n  d\ne"), "a NL IN b NL IN c NL OUT d NL OUT e NL")
+  assertEq(out("a\n  b\nc\n  d"), "a NL IN b NL OUT c NL IN d NL OUT")
+  assertEq(loose("a\n     b\n         c\nd"), "a NL IN b NL IN c NL OUT OUT d NL")
+
+@test("a line lining up with no open block is an error, and stays in the block it is misaligned in")
+misaligned()
+  assertEq(
+    out("a\n  b\n    c\n   d\n   e\nf"),
+    "a NL IN b NL IN c NL d NL e NL OUT OUT f NL | 4:1: this line's indentation, 3, lines up with no enclosing block: its block is indented 4 and the one outside it 2"
+  )
+  assertEq(
+    out("a\n  b\n    c\n      d\n   e"),
+    "a NL IN b NL IN c NL IN d NL OUT e NL OUT OUT | 5:1: this line's indentation, 3, lines up with no enclosing block: its block is indented 4 and the one outside it 2"
+  )
+  assertEq(
+    out("a\n  b\n c\nd"),
+    "a NL IN b NL c NL OUT d NL | 3:1: this line's indentation, 1, lines up with no enclosing block: its block is indented 2 and the one outside it 0"
+  )
+  assertEq(
+    loose("a\n    b\n  c"),
+    "a NL IN b NL c NL OUT | 3:1: this line's indentation, 2, lines up with no enclosing block: its block is indented 4 and the one outside it 0"
+  )
+  val r = laid(LxLayout, "a\n  b\n c")
+  assertEq(r.errors(0) is Misaligned(_, 2, 0), true)
+  assertEq(r.errors(0).margin().width, 1)
+  assertEq(s"${r.errors(0).margin().text}", "3:2")
+
+@test("a block indented other than the step is an error, and opens where its line is")
+unevenStep()
+  assertEq(out("a\n   b"), "a NL IN b NL OUT | 2:1: this line is indented 3 past its block, and a block is indented 2")
+  assertEq(
+    out("a\n    b\n      c"),
+    "a NL IN b NL IN c NL OUT OUT | 2:1: this line is indented 4 past its block, and a block is indented 2"
+  )
+  assertEq(
+    out("a\n b\n  c"),
+    "a NL IN b NL IN c NL OUT OUT | 2:1: this line is indented 1 past its block, and a block is indented 2 | 3:1: this line is indented 1 past its block, and a block is indented 2"
+  )
+  assertEq(out("   a"), "IN a NL OUT | 1:1: this line is indented 3 past its block, and a block is indented 2")
+  assertEq(loose("a\n   b\n         c"), "a NL IN b NL IN c NL OUT OUT")
+  assertEq(laid(LxLayout, "a\n   b").errors(0) is UnevenIndent(_, 0, 2), true)
+
+@test("a tab in a margin is an error, and the line is read one step in or in its own block")
+tabs()
+  assertEq(out("a\n\tb"), "a NL IN b NL OUT | 2:1: indentation uses a tab")
+  assertEq(out("a\n  b\n\tc"), "a NL IN b NL c NL OUT | 3:1: indentation uses a tab")
+  assertEq(out("a\n  \t  b\n    c"), "a NL IN b NL IN c NL OUT OUT | 2:1: indentation uses a tab")
+  assertEq(out("\ta"), "IN a NL OUT | 1:1: indentation uses a tab")
+  assertEq(out("\t\n  \t\na"), "a NL")
+  assertEq(out("a\tb"), "a b NL")
+  assertEq(
+    loose("a\n\t\tb\n\t\tc"),
+    "a NL IN b NL c NL OUT | 2:1: indentation uses a tab | 3:1: indentation uses a tab"
+  )
+  assertEq(laid(LxLayout, "a\n\tb").errors(0) is TabIndent(_), true)
+
+@test("a line beginning with a continuing token, indented further than its block, carries on the line above")
+continuations()
+  assertEq(out("a\n  .b\nc"), "a . b NL c NL")
+  assertEq(places("a\n  .b\nc"), "a@1:1 .@2:3 b@2:4 NL@2:5 c@3:1 NL@3:2")
+  assertEq(out("a\n  .b\n  .c\n      .d"), "a . b . c . d NL")
+  assertEq(out("a\n.b"), "a NL . b NL")
+  assertEq(out("x\n  a\n    .b\n  c"), "x NL IN a . b NL c NL OUT")
+  assertEq(out("x\n  a\n  .b"), "x NL IN a NL . b NL OUT")
+  assertEq(out("a\n  ..b"), "a NL IN .. b NL OUT")
+  assertEq(out(".a\nb"), ". a NL b NL")
+  assertEq(out("  .a"), "IN . a NL OUT")
+  assertEq(out("a\n    .b\n  c"), "a . b NL IN c NL OUT")
+  assertEq(out("a\n\n  # n\n  .b"), "a # n . b NL")
+  assertEq(out("a\n   .b"), "a . b NL")
+  assertEq(loose("a\n  .b"), "a NL IN . b NL OUT")
+
+@test("inside brackets line ends are white space, and their margins decide nothing")
+bracketsHoldLineEnds()
+  assertEq(out("f(\n  a,\nb)\nc"), "f ( a , b ) NL c NL")
+  assertEq(out("x = [\n    1,\n  {\n      k\n  }\n]\ny"), "x = [ 1 , { k } ] NL y NL")
+  assertEq(out("if a\n  f(\n1)\n  b"), "if a NL IN f ( 1 ) NL b NL OUT")
+  assertEq(out("f(\n\n  # n\n  a)"), "f ( # n a ) NL")
+  assertEq(out("f(\n\ta)"), "f ( a ) NL")
+  assertEq(
+    out("f(\n   a)\n   b"),
+    "f ( a ) NL IN b NL OUT | 3:1: this line is indented 3 past its block, and a block is indented 2"
+  )
+  assertEq(out(")\na"), ") NL a NL")
+  assertEq(out("f(\n  a"), "f ( a NL")
+  assertEq(out("f(a)\n  .b(\n c)\nd"), "f ( a ) . b ( c ) NL d NL")
+  assertEq(loose("f(\n  a)"), "f ( NL IN a ) NL OUT")
+
+@test("blank and comment lines between blocks are not lines, and comments stay where they are")
+blankAndComments()
+  assertEq(out("a\n  b\n\n  # n\n\nc"), "a NL IN b NL # n OUT c NL")
+  assertEq(out("a # t\nb"), "a # t NL b NL")
+  assertEq(places("a # t\nb"), "a@1:1 # t@1:3 NL@1:2 b@2:1 NL@2:2")
+  assertEq(out("# head\na"), "# head a NL")
+  assertEq(out("a\n        # deep\nb"), "a NL # deep b NL")
+  assertEq(out("a\n  b\n# tail"), "a NL IN b NL # tail OUT")
+  assertEq(out("a\n # odd\n\t# tab\n  b"), "a NL # odd # tab IN b NL OUT")
+  assertEq(loose("a\n  # n\nb"), "a NL IN # n NL OUT b NL")
+
+@test("a text with CRLF line ends lays out as one with LF line ends")
+crlf()
+  assertEq(out("a\r\n  b\r\nc\r\n"), "a NL IN b NL OUT c NL")
+  assertEq(places("a\r\n  b\r\nc"), "a@1:1 NL@1:2 IN@2:3 b@2:3 NL@2:4 OUT@3:1 c@3:1 NL@3:2")
+  assertEq(out("a # n\r\n  .b\r\n\r\n"), "a # n . b NL")
+  assertEq(out("f(\r\n  a)\r\n"), "f ( a ) NL")
+
+@test("lines holding Unicode are placed by character, and their margins by column")
+unicode()
+  assertEq(places("ñame\n  ü = π\nß"), "ñame@1:1 NL@1:5 IN@2:3 ü@2:3 =@2:5 π@2:7 NL@2:8 OUT@3:1 ß@3:1 NL@3:2")
+  assertEq(laid(LxLayout, "ñame\nb").tokens(1).begins.offset, 5)
+  assertEq(out("日本\n  語\n    .続く"), "日本 NL IN 語 . 続く NL OUT")
+  assertEq(
+    out("a\n  ü\n   é"),
+    "a NL IN ü NL IN é NL OUT OUT | 3:1: this line is indented 1 past its block, and a block is indented 2"
+  )
+
+@test("every indentation error in a text is reported in order, and the layout carries on")
+errorsInOrder()
+  val r = laid(LxLayout, "a\n\tb\n   c\n d\ne")
+  assertEq(
+    render(r),
+    "a NL IN b NL IN c NL OUT d NL OUT e NL | 2:1: indentation uses a tab | 3:1: this line is indented 1 past its block, and a block is indented 2 | 4:1: this line's indentation, 1, lines up with no enclosing block: its block is indented 2 and the one outside it 0"
+  )
+  assertEq(r.errors.map(e -> e.pos().offset).mkString(","), "2,5,10")
+  assertEq(r.errors.map(e -> s"${e.margin().text}").mkString(" "), "2:2 3:4 4:2")

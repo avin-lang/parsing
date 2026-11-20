@@ -3,7 +3,10 @@ module tests
 // Parsing a token stream: the three token leaves, positions taken from the tokens, failures at
 // the end of the tokens and of an empty stream, recovery, the combinators and input-free rules
 // joining token rules, and a whole indentation language, Blocks, in `blocks.avin`.
-import dev.avinlang.parsing.{Failure, ParseResult, Position, Rule, Success, Tokens, err, failure, not, parse, parseAll, positioned, success, token, tokenMatch}
+import dev.avinlang.parsing.{
+  Failure, ParseResult, Position, Rule, Success, Tokens, err, failure, not, parse, parseAll, positioned, success, token,
+  tokenMatch
+}
 
 // A result's value, or `failed`, then each error it lists as `line:column: message`.
 listed[T: Display](r: ParseResult[T]) -> string
@@ -21,12 +24,59 @@ textOf[T: Display](p: Rule[Tokens[Tok], T], text: string) -> string = shown(pars
 @test("the lexer makes INDENT, DEDENT and NEWLINE tokens, each where it stands")
 lexing()
   val ts = lex("a = 1\nif a\n  print a\n\nb = 22")
-  assertEq(ts.map(t -> t.shown).mkString(" "), "`a` `=` 1 end of line `if` `a` end of line indent `print` `a` end of line dedent `b` `=` 22 end of line")
+  assertEq(
+    ts.map(t -> t.shown).mkString(" "),
+    "`a` `=` 1 end of line `if` `a` end of line indent `print` `a` end of line dedent `b` `=` 22 end of line"
+  )
   assertEq(ts.map(t -> s"${t.where}").mkString(" "), "1:1 1:3 1:5 1:6 2:1 2:4 2:5 3:3 3:3 3:9 3:10 5:1 5:1 5:3 5:5 5:7")
   assertEq(ts(7).where.offset, 13)
-  assertEq(lex("if a\n  if b\n    print c").map(t -> t.shown).mkString(" "), "`if` `a` end of line indent `if` `b` end of line indent `print` `c` end of line dedent dedent")
+  assertEq(
+    lex("if a\n  if b\n    print c").map(t -> t.shown).mkString(" "),
+    "`if` `a` end of line indent `if` `b` end of line indent `print` `c` end of line dedent dedent"
+  )
   assertEq(lex("").length, 0)
   assertEq(lex("\n\n").length, 0)
+
+@test("the lexer marks each line with its margin, and the layout replaces the marks")
+marking()
+  assertEq(marked("a\n  b").map(t -> t.shown).mkString(" "), "line start `a` line start `b`")
+  assertEq(marked("").map(t -> t.shown).mkString(" "), "line start")
+  assertEq(marked("a\n  b").map(t -> s"${t.where}").mkString(" "), "1:1 1:1 2:1 2:3")
+  assertEq(lex("a\n  b").map(t -> t.shown).mkString(" "), "`a` end of line indent `b` end of line dedent")
+
+@test("comment lines, trailing comments and CRLF line ends make no tokens of their own")
+commentsAndCrlf()
+  assertEq(
+    lex("if a  # why\n  # alone\n\n  print a\n# out\nb = 1").map(t -> t.shown).mkString(" "),
+    "`if` `a` end of line indent `print` `a` end of line dedent `b` `=` 1 end of line"
+  )
+  assertEq(
+    lex("a = 1\r\nif a\r\n  print a\r\n").map(t -> t.shown).mkString(" "),
+    lex("a = 1\nif a\n  print a\n").map(t -> t.shown).mkString(" ")
+  )
+  assertEq(textOf(Blocks.program, "a = 1\r\nif a\r\n  print a\r\nb = 2\r\n"), "[a = 1, if a {print a}, b = 2]")
+  assertEq(lex("a\tb").map(t -> t.shown).mkString(" "), "`a` `b` end of line")
+  assertEq(lex("a\rb").map(t -> t.shown).mkString(" "), "`a` `\r` `b` end of line")
+
+@test("Blocks indents any amount, and reports a tab or a misaligned line while lexing on")
+blocksLayoutErrors()
+  assertEq(textOf(Blocks.program, "if a\n     print a\nif b\n print b"), "[if a {print a}, if b {print b}]")
+  val tab = lexed("if a\n\tprint a")
+  assertEq(tab.errors.map(e -> s"$e").mkString(" | "), "2:1: indentation uses a tab")
+  assertEq(tab.tokens.map(t -> t.shown).mkString(" "), "`if` `a` end of line indent `print` `a` end of line dedent")
+  val odd = lexed("if a\n    print a\n  print b\nc = 1")
+  assertEq(
+    odd.errors.map(e -> s"$e").mkString(" | "),
+    "3:1: this line's indentation, 2, lines up with no enclosing block: its block is indented 4 and the one outside it 0"
+  )
+  assertEq(
+    Blocks.parseAll(Blocks.program, odd.tokens).map(ss -> s"$ss").getOrElse("failed"),
+    "[if a {print a; print b}, c = 1]"
+  )
+  assertEq(
+    lexed("a = 1\n  .b = 2").tokens.map(t -> t.shown).mkString(" "),
+    "`a` `=` 1 end of line indent `.` `b` `=` 2 end of line dedent"
+  )
 
 @test("tokens compare by what they are, not where they stand")
 tokenEquality()
@@ -38,7 +88,10 @@ tokenEquality()
 exactToken()
   assertEq(allOf(Blocks.token(Name("if")), lex("if").take(1)), "`if`")
   assertEq(allOf(Blocks.token(Indent()), Vector(Indent(placed(4, 2, 3)))), "indent")
-  assertEq(allOf(Blocks.token(Name("if")), Vector(Name("of", placed(7, 3, 5)))), "failure 3:5: expected `if`, found `of`")
+  assertEq(
+    allOf(Blocks.token(Name("if")), Vector(Name("of", placed(7, 3, 5)))),
+    "failure 3:5: expected `if`, found `of`"
+  )
   assertEq(allOf(Blocks.token(Sym("=")), Vector(Num(4, placed(2, 1, 3)))), "failure 1:3: expected `=`, found 4")
   val r = Blocks.parseAll(Blocks.token(Name("if")), lex("if").take(1))
   assertEq(r.next().offset, 1)
@@ -59,7 +112,10 @@ payloadToken()
 
 @test("an indentation language parses into nested blocks")
 blocksLanguage()
-  assertEq(textOf(Blocks.program, "a = 1\nif a\n  print a\n  b = 2\nprint b"), "[a = 1, if a {print a; b = 2}, print b]")
+  assertEq(
+    textOf(Blocks.program, "a = 1\nif a\n  print a\n  b = 2\nprint b"),
+    "[a = 1, if a {print a; b = 2}, print b]"
+  )
   assertEq(textOf(Blocks.program, "if a\n  if b\n    print c\n  d = 4\n"), "[if a {if b {print c}; d = 4}]")
   assertEq(textOf(Blocks.program, "if a\n  if b\n    print c"), "[if a {if b {print c}}]")
   assertEq(textOf(Blocks.program, "print = 3"), "[print = 3]")
@@ -70,16 +126,36 @@ spansInErrors()
   assertEq(textOf(Blocks.program, "a = 1\nif a\n  print 7"), "error 3:9: expected name or `=`, found 7")
   assertEq(textOf(Blocks.program, "if a\nb = 1"), "error 2:1: expected indent, found `b`")
   assertEq(textOf(Blocks.program, "if 3"), "error 1:4: expected name, found 3")
-  assertEq(allOf(positioned(Blocks.name ^^ (n -> Node(n))) ^^ (n -> n.where()), Vector(Name("width", placed(9, 3, 4)))), "width@3:4")
-  assertEq(textOf(Blocks.token(Indent()) ~> positioned(Blocks.name ^^ (n -> Node(n))) <~ Blocks.newline <~ Blocks.token(Dedent()) ^^ (n -> n.where()), "  \n\n   width"), "width@3:4")
+  assertEq(
+    allOf(positioned(Blocks.name ^^ (n -> Node(n))) ^^ (n -> n.where()), Vector(Name("width", placed(9, 3, 4)))),
+    "width@3:4"
+  )
+  assertEq(
+    textOf(
+      Blocks.token(Indent()) ~> positioned(
+        Blocks.name ^^ (n -> Node(n))
+      ) <~ Blocks.newline <~ Blocks.token(Dedent()) ^^ (n -> n.where()),
+      "  \n\n   width"
+    ),
+    "width@3:4"
+  )
 
 @test("a failure after the last token is at the end of input, which the grammar or the caller places")
 endOfInput()
   assertEq(textOf(Blocks.program, "a = 1\nif a"), "error 2:5: expected indent, found end of input")
   assertEq(textOf(Blocks.program, "a = 1\nif a\n"), "error 3:1: expected indent, found end of input")
-  assertEq(allOf(Blocks.name ~ Blocks.name, Vector(Name("a", placed(4, 2, 3)))), "failure 2:3: expected name, found end of input")
-  assertEq(shown(Blocks.parseAll(Blocks.name ~ Blocks.name, Vector(Name("a", placed(4, 2, 3))), Position(5, 2, 4))), "failure 2:4: expected name, found end of input")
-  assertEq(allOf(Blocks.name, Vector(Name("a", placed(4, 2, 3)), Name("b", placed(6, 2, 5)))), "failure 2:5: expected end of input, found `b`")
+  assertEq(
+    allOf(Blocks.name ~ Blocks.name, Vector(Name("a", placed(4, 2, 3)))),
+    "failure 2:3: expected name, found end of input"
+  )
+  assertEq(
+    shown(Blocks.parseAll(Blocks.name ~ Blocks.name, Vector(Name("a", placed(4, 2, 3))), Position(5, 2, 4))),
+    "failure 2:4: expected name, found end of input"
+  )
+  assertEq(
+    allOf(Blocks.name, Vector(Name("a", placed(4, 2, 3)), Name("b", placed(6, 2, 5)))),
+    "failure 2:5: expected end of input, found `b`"
+  )
   assertEq(shown(Blocks.parse(Blocks.name, Vector(Name("a"), Name("b")))), "a")
   assertEq(Blocks.parse(Blocks.name, Vector(Name("a"), Name("b"))).next().offset, 1)
 
@@ -92,43 +168,89 @@ emptyStream()
   assertEq(allOf(Blocks.token(Indent()), none), "failure 1:1: expected indent, found end of input")
   assertEq(allOf(Blocks.symbol, none), "failure 1:1: expected symbol, found end of input")
   assertEq(allOf(Blocks.stmt, none), "failure 1:1: expected `if`, `print` or name, found end of input")
-  assertEq(shown(Blocks.parseAll(Blocks.name, none, Position(12, 4, 1))), "failure 4:1: expected name, found end of input")
+  assertEq(
+    shown(Blocks.parseAll(Blocks.name, none, Position(12, 4, 1))),
+    "failure 4:1: expected name, found end of input"
+  )
   assertEq(textOf(Blocks.program, ""), "[]")
 
 @test("recovery over tokens reports every bad line and reads the good ones")
 recovery()
   assertEq(listed(parseText(Blocks.lines, "a = 1\nb 2\nc = 3")), "[a = 1, <2:3>, c = 3] | 2:3: expected `=`, found 2")
-  assertEq(listed(parseText(Blocks.lines, "a 1\nb 2 3\nc = 3")), "[<1:3>, <2:3>, c = 3] | 1:3: expected `=`, found 1 | 2:3: expected `=`, found 2")
-  assertEq(listed(parseText(Blocks.lines, "= 1\nc = 3")), "[<1:1>, c = 3] | 1:1: expected `if`, `print` or name, found `=`")
+  assertEq(
+    listed(parseText(Blocks.lines, "a 1\nb 2 3\nc = 3")),
+    "[<1:3>, <2:3>, c = 3] | 1:3: expected `=`, found 1 | 2:3: expected `=`, found 2"
+  )
+  assertEq(
+    listed(parseText(Blocks.lines, "= 1\nc = 3")),
+    "[<1:1>, c = 3] | 1:1: expected `if`, `print` or name, found `=`"
+  )
   assertEq(listed(parseText(Blocks.lines, "a = 1\nb =")), "[a = 1, <2:4>] | 2:4: expected number, found end of line")
-  assertEq(listed(parseText(Blocks.lines, "if a\n  b 1\n  c = 2\nd = 3")), "[<2:5>, c = 2, <4:1>] | 2:5: expected `=`, found 1 | 4:1: expected `if`, `print` or name, found dedent")
+  assertEq(
+    listed(parseText(Blocks.lines, "if a\n  b 1\n  c = 2\nd = 3")),
+    "[<2:5>, c = 2, <4:1>] | 2:5: expected `=`, found 1 | 4:1: expected `if`, `print` or name, found dedent"
+  )
   assertEq(listed(parseText(Blocks.lines, "a = 1\nc = 3")), "[a = 1, c = 3]")
   assertEq(parseText(Blocks.lines, "a 1\nc = 3").errors()(0).pos.offset, 2)
 
 @test("recovery does not recover from the end of the tokens")
 recoveryAtTheEnd()
   val bad = Vector(Name("b", placed(0, 1, 1)), Sym("=", placed(2, 1, 3)))
-  assertEq(listed(Blocks.parseAll(Blocks.lines, bad, Position(3, 1, 4))), "failed | 1:4: expected number, found end of input")
-  val twice = Vector(Name("a", placed(0, 1, 1)), Num(1, placed(2, 1, 3)), Newline(placed(3, 1, 4)), Name("b", placed(4, 2, 1)), Sym("=", placed(6, 2, 3)))
-  assertEq(listed(Blocks.parseAll(Blocks.lines, twice, Position(7, 2, 4))), "failed | 1:3: expected `=`, found 1 | 2:4: expected number, found end of input")
+  assertEq(
+    listed(Blocks.parseAll(Blocks.lines, bad, Position(3, 1, 4))),
+    "failed | 1:4: expected number, found end of input"
+  )
+  val twice = Vector(
+    Name("a", placed(0, 1, 1)),
+    Num(1, placed(2, 1, 3)),
+    Newline(placed(3, 1, 4)),
+    Name("b", placed(4, 2, 1)),
+    Sym("=", placed(6, 2, 3))
+  )
+  assertEq(
+    listed(Blocks.parseAll(Blocks.lines, twice, Position(7, 2, 4))),
+    "failed | 1:3: expected `=`, found 1 | 2:4: expected number, found end of input"
+  )
 
 @test("a token read just before a `not` that refuses what follows is named as expected")
 tokenThenNot()
   assertEq(allOf(Blocks.token(Name("a")) <~ not(Blocks.symbol), Vector(Name("a"))), "`a`")
-  assertEq(allOf(Blocks.token(Name("a")) <~ not(Blocks.symbol), Vector(Name("a", placed(0, 1, 1)), Sym("=", placed(2, 1, 3)))), "failure 1:1: expected `a`, found `a`")
+  assertEq(
+    allOf(Blocks.token(Name("a")) <~ not(Blocks.symbol), Vector(Name("a", placed(0, 1, 1)), Sym("=", placed(2, 1, 3)))),
+    "failure 1:1: expected `a`, found `a`"
+  )
 
 @test("input-free rules join token rules on either side")
 inputFree()
   assertEq(allOf(Blocks.name | success("none"), Vector()), "none")
   assertEq(allOf(success(7) ~ Blocks.number, Vector(Num(8))), "(7, 8)")
-  assertEq(allOf(Blocks.name | failure("a name here"), Vector(Num(1, placed(0, 1, 1)))), "failure 1:1: expected name or a name here, found 1")
-  assertEq(allOf(Blocks.token(Name("let")) ~> (Blocks.name | err("a name after `let`")), Vector(Name("let"), Num(1, placed(4, 1, 5)))), "error 1:5: expected name or a name after `let`, found 1")
+  assertEq(
+    allOf(Blocks.name | failure("a name here"), Vector(Num(1, placed(0, 1, 1)))),
+    "failure 1:1: expected name or a name here, found 1"
+  )
+  assertEq(
+    allOf(
+      Blocks.token(Name("let")) ~> (Blocks.name | err("a name after `let`")),
+      Vector(Name("let"), Num(1, placed(4, 1, 5)))
+    ),
+    "error 1:5: expected name or a name after `let`, found 1"
+  )
 
 @test("the module's token leaves and parse take the token type from their arguments")
 moduleLeaves()
-  val ts = Tokens(Vector(Name("a"), Num(1, placed(2, 1, 3))), (t: Tok) -> t.shown, (t: Tok) -> t.where, Position(3, 1, 4))
+  val ts = Tokens(
+    Vector(Name("a"), Num(1, placed(2, 1, 3))),
+    (t: Tok) -> t.shown,
+    (t: Tok) -> t.where,
+    Position(3, 1, 4)
+  )
   assertEq(shown(parseAll(token(Name("a")) ~ tokenMatch[Tok, long]("number", match Num(v, _) -> v), ts)), "(`a`, 1)")
-  val again = Tokens(Vector(Name("a"), Name("b", placed(2, 1, 3))), (t: Tok) -> t.shown, (t: Tok) -> t.where, Position(3, 1, 4))
+  val again = Tokens(
+    Vector(Name("a"), Name("b", placed(2, 1, 3))),
+    (t: Tok) -> t.shown,
+    (t: Tok) -> t.where,
+    Position(3, 1, 4)
+  )
   assertEq(shown(parseAll(token[Tok]("number", t -> t is Num(_, _)), again)), "failure 1:1: expected number, found `a`")
   val third = Tokens(Vector(Name("a")), (t: Tok) -> t.shown, (t: Tok) -> t.where, Position(1, 1, 2))
   assertEq(shown(parse(token(Name("a")), third)), "`a`")

@@ -1,0 +1,305 @@
+# Layout: blocks marked by indentation
+
+A language whose blocks are marked by indentation needs its lexer to say where a block opens, where
+it closes and where a statement ends. Those are questions about the lines around a line, not about
+its characters, and every such language answers them by one rule, the offside rule: a line indented
+further than its block opens a block in it, a line indented less closes each block it leaves, and
+a line's end ends its statement. What varies from one language to the next is small: how far a
+block is indented, which lines carry on the line above, which brackets make line ends white space,
+and which tokens a line may hold and still count as blank.
+
+So the lexer is written with the string combinators, and does not keep the rule. It marks where
+each line begins, with a token holding the line's `Margin`, its indentation as `margin` reads it,
+and emits the line's tokens after it. A `Layout` then reads that stream and gives it back with the
+marks taken out and the language's indent, dedent and newline tokens put in, and a list of the
+lines whose indentation is wrong. The token type is the language's own: the layout is told how to
+recognise a mark and how to make the three tokens it adds.
+
+    module dev.avinlang.parsing
+
+## Reading a line's margin
+
+A line's margin is the spaces and tabs it begins with. Its width counts them, a tab as one column,
+since a tab is an error a layout reports rather than a width it guesses at; `start` is where the
+line begins and `text` where what follows the margin begins.
+
+    // The indentation a line begins with: how many spaces and tabs, whether a tab is among them,
+    // where the line begins and where its text begins.
+    data Margin(width: int, tabbed: bool, start: Position, text: Position)
+
+`margin` reads one, at the start of a line. It skips no white space, which would read the margin
+itself, and it reads nothing at all where the line is not indented, so it always succeeds.
+
+    // The spaces and tabs at the start of a line, read as its margin.
+    lazy val margin: Parser[Margin] = Parser(input ->
+      val start = input.offset
+      var tabbed = false
+      while !input.atEnd() && isMarginByte(input, input.offset)
+        if char(int(input.source.byteAt(input.offset))) == '\t' then tabbed = true
+        input.offset += 1
+      Some(Margin(input.offset - start, tabbed, input.position(start), input.pos())))
+
+    // Whether the byte at `at` is a space or a tab.
+    private isMarginByte(input: Input, at: int) -> bool = char(int(input.source.byteAt(at))) match
+      ' ' | '\t' -> true
+      _ -> false
+
+`lineBreak` reads a line's end, `\r\n` or `\n`, after white space, so the spaces after a line's last
+token go with it. A lexer of lines is then lines separated by line breaks, each a margin and the
+tokens after it:
+
+```avin
+lazy val line: Parser[List[Tok]] = (margin ^^ (m -> Mark(m))) ~ rep(not(lineBreak) ~> item) ^^ (match (m, ts) -> m :: ts)
+lazy val lines: Parser[List[List[Tok]]] = repsep(line, lineBreak)
+```
+
+where the grammar's white space is spaces and tabs, and comments if the language drops them, but
+never a line break.
+
+    // The end of a line, `\r\n` or `\n`, after white space.
+    lazy val lineBreak: Parser[string] = (literal("\r\n") | literal("\n")).withFailureMessage("end of line")
+
+## The rule
+
+The layout keeps the indentation of each open block, the outermost at width 0, and reads the
+tokens in order. At a line's first token, what the line means is decided:
+
+- A line holding nothing but white space, or only tokens the language calls **trivia** (comments it
+  keeps), is no line at all: it opens nothing, closes nothing and ends nothing. Its trivia stay in
+  the stream where they stand.
+- A line beginning with a token the language says **continues** the line above, and indented
+  further than the block it is in, carries on the line above: no newline comes between them.
+- Any other line ends the one above with a **newline**, placed where that line's last token ended,
+  and then lines up: indented further than its block, it opens a block with an **indent**; indented
+  less, it closes each block it leaves with a **dedent**, both placed at the line's margin.
+
+Inside a bracket the language **opens** and does not yet **close**, line ends are white space: the
+marks there are dropped and decide nothing. At the end, the last line ends with a newline, and every
+block still open closes with a dedent at the end of the text.
+
+A block is indented by a fixed **step**, or by any amount deeper when the step is 0. Three things
+can be wrong, and each is reported at the start of its line while the layout carries on, so one
+text reports every mistake:
+
+| Error | When | What the layout does |
+| --- | --- | --- |
+| `TabIndent(at)` | the margin holds a tab | reads the line as one step into its block where it is indented further, and in its block otherwise, so the one mistake is reported once |
+| `UnevenIndent(at, outer, step)` | a line opens a block indented other than `step` past the one it is in | opens the block where the line is |
+| `Misaligned(at, inner, outer)` | a line indented less than its block lines up with no block it is in, falling between `inner` and the block outside it, `outer` | keeps the line in the inner block, which is indented as the line is from then on |
+
+    // A line whose indentation is wrong: each is at the start of its line, `at`.
+    data LayoutError
+      // The margin holds a tab.
+      TabIndent(at: Margin)
+      // A line opens a block indented other than `step` past the block it is in, at `outer`.
+      UnevenIndent(at: Margin, outer: int, step: int)
+      // A line indented less than its block, at `inner`, and more than the block outside it, at
+      // `outer`.
+      Misaligned(at: Margin, inner: int, outer: int)
+
+    impl LayoutError
+      // The margin of the line in error.
+      margin() -> Margin = self match
+        TabIndent(m) -> m
+        UnevenIndent(m, _, _) -> m
+        Misaligned(m, _, _) -> m
+
+      // Where the error is: the start of its line.
+      pos() -> Position = margin().start
+
+      // What is wrong, in words.
+      message() -> string = self match
+        TabIndent(_) -> "indentation uses a tab"
+        UnevenIndent(
+          m,
+          outer,
+          step
+        ) -> s"this line is indented ${m.width - outer} past its block, and a block is indented $step"
+        Misaligned(
+          m,
+          inner,
+          outer
+        ) -> s"this line's indentation, ${m.width}, lines up with no enclosing block: its block is indented $inner and the one outside it $outer"
+
+    // An error shows as its line and column and its message.
+    impl Display for LayoutError
+      display(out: Writer, spec: FormatSpec) = out.write(s"${pos()}: ${message()}")
+
+What a layout answers is the tokens with the marks taken out and the layout tokens put in, and the
+errors in the order of their lines.
+
+    // The tokens a layout made, and the indentation errors it found.
+    class LaidOut[E](val tokens: Vector[E], val errors: List[LayoutError])
+
+## A language's layout
+
+A language says what varies by conforming to `Layout[E]`, for its token type `E`. Five things it
+must say, since only it knows its tokens: which token marks a line and with what margin, how to make
+an indent, a dedent and a newline, and where a token ends. The rest have defaults: any deeper
+indentation opens a block, no line continues another, no bracket holds line ends, and every token
+counts.
+
+```avin
+object Lines: Layout[Tok]
+  override lineStart(t: Tok) -> Option[Margin] = t match
+    Mark(m) -> Some(m)
+    _ -> None
+  override indentToken(at: Margin) -> Tok = Indent(at.text)
+  override dedentToken(at: Margin) -> Tok = Dedent(at.text)
+  override newlineToken(at: Position) -> Tok = Newline(at)
+  override tokenEnd(t: Tok) -> Position = t.end
+  override step() -> int = 2
+  override continues(t: Tok) -> bool = t is Dot(_)
+  override opens(t: Tok) -> bool = t is Open(_)
+  override closes(t: Tok) -> bool = t is Close(_)
+```
+
+The dedents at the end of the text are given a margin of width 0 whose start and text are both
+`end`.
+
+    // How a language's lines make blocks: the tokens that mark a line and the tokens a layout adds,
+    // and what decides whether a line opens, closes, continues or ends one.
+    trait Layout[E]
+      // The margin of the line `t` marks the start of, or `None` when `t` is not a mark.
+      lineStart(t: E) -> Option[Margin]
+
+      // The token opening a block at the line whose margin is `at`.
+      indentToken(at: Margin) -> E
+
+      // The token closing a block, at the line whose margin is `at`.
+      dedentToken(at: Margin) -> E
+
+      // The token ending a line whose last token ends at `at`.
+      newlineToken(at: Position) -> E
+
+      // Where `t` ends in the text.
+      tokenEnd(t: E) -> Position
+
+      // How far a block is indented past the one it is in, or 0 for any amount.
+      step() -> int = 0
+
+      // Whether a line beginning with `t`, indented further than its block, carries on the line
+      // above.
+      continues(t: E) -> bool = false
+
+      // Whether `t` opens a bracket, inside which line ends are white space.
+      opens(t: E) -> bool = false
+
+      // Whether `t` closes the bracket open.
+      closes(t: E) -> bool = false
+
+      // Whether `t` is trivia: kept in place, but leaving a line that holds only it blank.
+      trivia(t: E) -> bool = false
+
+      // `items` with their marks replaced by indents, dedents and newlines, the text ending at `end`.
+      layout(items: Vector[E], end: Position) -> LaidOut[E]
+        val run = Offside(self, end)
+        for t in items
+          run.take(t)
+        run.finish()
+
+## Applying the rule
+
+A run of the rule keeps the open blocks' widths, innermost first, and the bracket depth. A line's
+mark is held until its first token comes, since only that token says whether the line continues
+the one above; trivia that come before it are held too, so they stand after the newline that ends
+the line above and before the line's indents or dedents.
+
+    // One application of a layout to a stream of tokens.
+    private class Offside[E](val rules: Layout[E], val end: Position)
+      // The tokens made so far.
+      val out = Buffer[E]()
+
+      // The errors found so far.
+      val errors = Buffer[LayoutError]()
+
+      // Trivia held until the line they stand before is laid out.
+      val held = Buffer[E]()
+
+      // The widths of the open blocks, innermost first; the outermost is 0.
+      var levels = List(0)
+
+      // How many brackets are open.
+      var depth = 0
+
+      // The margin of the line whose first token has not come yet.
+      var pending: Option[Margin] = None
+
+      // Whether a line with a token in it has been read.
+      var started = false
+
+      // Whether the line being read has a token in it that is not trivia.
+      var filled = false
+
+      // Where the last token that is not trivia ended.
+      var lastEnd = Position(0, 1, 1)
+
+      // Reads the next token.
+      take(t: E) = rules.lineStart(t) match
+        Some(m) ->
+          if depth == 0
+            pending = Some(m)
+            filled = false
+        None ->
+          if rules.trivia(t)
+            if filled then out += t else held += t
+          else
+            pending match
+              Some(m) -> startLine(m, t)
+              None -> flushHeld()
+            pending = None
+            started = true
+            filled = true
+            out += t
+            lastEnd = rules.tokenEnd(t)
+            if rules.opens(t)
+              depth += 1
+            else if rules.closes(t) && depth > 0
+              depth -= 1
+
+      // Decides what the line with margin `m` and first token `t` means, and lays it out.
+      private startLine(m: Margin, t: E)
+        val top = levels.head
+        var width = m.width
+        if m.tabbed
+          errors += TabIndent(m)
+          width = if width <= top then top else if rules.step() > 0 then top + rules.step() else width
+        if started && width > top && rules.continues(t)
+          flushHeld()
+          return
+        if started then out += rules.newlineToken(lastEnd)
+        flushHeld()
+        indentTo(width, m)
+
+      // Opens or closes blocks so that a line indented `width` is in its own.
+      private indentTo(width: int, m: Margin)
+        val top = levels.head
+        if width > top
+          if rules.step() > 0 && width != top + rules.step() then errors += UnevenIndent(m, top, rules.step())
+          levels = width :: levels
+          out += rules.indentToken(m)
+        else
+          while width < levels.head
+            val outer = levels.tail.head
+            if outer < width
+              errors += Misaligned(m, levels.head, outer)
+              levels = width :: levels.tail
+              return
+            levels = levels.tail
+            out += rules.dedentToken(m)
+
+      // Moves the held trivia to the output.
+      private flushHeld()
+        for t in held
+          out += t
+        held.clear()
+
+      // Ends the last line, closes every block still open, and answers what was made.
+      finish() -> LaidOut[E]
+        if started then out += rules.newlineToken(lastEnd)
+        flushHeld()
+        val at = Margin(0, false, end, end)
+        while !levels.tail.isEmpty
+          levels = levels.tail
+          out += rules.dedentToken(at)
+        LaidOut(out.toVector, errors.toList)
